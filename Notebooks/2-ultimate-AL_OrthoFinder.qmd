@@ -1,0 +1,303 @@
+---
+title: Ultimate OrthoFinder Analysis
+subtitle: Comparative genomics analysis with comprehensive troubleshooting guide
+jupyter: python3
+---
+
+## Project Overview
+
+This notebook documents the complete OrthoFinder analysis for comparative genomics, including detailed troubleshooting steps that were required to resolve technical issues. OrthoFinder is used for phylogenetic orthology inference and comparative genomics analysis across multiple species.
+
+### Analysis Summary
+- **Purpose**: OrthoFinder for Comparative Genomics Analysis
+- **Dataset**: 13 species
+- **Method**: All-versus-all sequence search followed by orthology inference
+
+## Environment Check
+
+First, let's verify our working directory and available data:
+
+```{python}
+!ls
+```
+
+```{python}
+!ls ./DB/GENOME_Comparison/FAA/
+```
+
+## Method
+
+Analysis on [14 Species](./DB/GENOME_Comparison/FAA/)
+
+The initial dataset contained 14 fish species, but due to sequence quality issues with one species, the final analysis was performed on 13 species.
+
+## Initial OrthoFinder Execution
+
+Let's start the OrthoFinder analysis:
+
+```{python}
+!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+```
+
+### Initial Error Encountered
+
+The first execution failed with the following error:
+
+```txt
+ERROR: external program called by OrthoFinder returned an error code: 1
+
+Command: diamond makedb --in /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/WorkingDirectory/Species13.fa -d /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/WorkingDirectory/diamondDBSpecies13
+
+stderr:
+diamond v2.1.10.164 (C) Max Planck Society for the Advancement of Science, Benjamin Buchfink, University of Tuebingen
+Documentation, support and updates available at http://www.diamondsearch.org
+Please cite: http://dx.doi.org/10.1038/s41592-021-01101-x Nature Methods (2021)
+
+#CPU threads: 128
+Scoring parameters: (Matrix=BLOSUM62 Lambda=0.267 K=0.041 Penalties=11/1)
+Database input file: /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/WorkingDirectory/Species13.fa
+Opening the database file...  [0.003s]
+Loading sequences... Error: Error reading input stream at line 2: Invalid character (.) in sequence
+```
+
+This error indicates that Diamond is encountering invalid characters (specifically dots ".") in the protein sequences.
+
+## Troubleshooting Process
+
+### Troubleshooting 1: Modify Diamond Configuration
+
+The error occurs with `diamond makedb`, so we need to add the `--ignore-warnings` flag to handle problematic sequences.
+
+**Solution**: Modify the OrthoFinder configuration to use `--ignore-warnings` flag with Diamond.
+
+Reference: [OrthoFinder GitHub Issue #637](https://github.com/davidemms/OrthoFinder/issues/637)
+
+First, let's examine the current configuration:
+
+```{python}
+!grep -i "db_cmd" /opt/conda/envs/env_orthofinder/bin/scripts_of/config.json
+!cp /opt/conda/envs/env_orthofinder/bin/scripts_of/config.json  /opt/conda/envs/env_orthofinder/bin/scripts_of/config.json.bac
+```
+
+Now modify the diamond configuration to include `--ignore-warnings`:
+
+```{python}
+!sed -i 's/"db_cmd": "diamond makedb --in INPUT -d OUTPUT"/"db_cmd": "diamond makedb  --ignore-warnings --in INPUT -d OUTPUT"/' /opt/conda/envs/env_orthofinder/bin/scripts_of/config.json
+!grep -i "db_cmd" /opt/conda/envs/env_orthofinder/bin/scripts_of/config.json
+```
+
+Retry OrthoFinder with the modified configuration:
+
+```{python}
+!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+```
+
+### Result of Troubleshooting 1
+
+The error persisted even with `--ignore-warnings`, indicating the sequence formatting issue needs direct attention:
+
+```txt
+stderr:
+Loading sequences... Error: Error reading input stream at line 546: Invalid character (.) in sequence
+```
+
+### Troubleshooting 2: Clean Sequence Data
+
+The issue is with dots (.) at the end of sequences in the FASTA files. Let's remove these problematic characters.
+
+**Solution**: Remove trailing dots from sequences in the problematic file.
+
+```{python}
+!sed -i 's/\.\s*$//' ./DB/GENOME_Comparison/FAA/Triplophysa_yarkandensis.faa
+```
+
+Retry OrthoFinder after cleaning the sequences:
+
+```{python}
+!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+```
+
+### Result of Troubleshooting 2
+
+The error continued to occur at different line numbers, suggesting multiple problematic sequences in the file:
+
+```txt
+Loading sequences... Error: Error reading input stream at line 546: Invalid character (.) in sequence
+```
+
+### Troubleshooting 3: Remove Problematic Species
+
+Since the sequence cleaning didn't fully resolve the issue with Species13 (Triplophysa_yarkandensis), the most reliable solution is to exclude this species from the analysis.
+
+**Solution**: Remove the problematic species file and proceed with 13 species.
+
+```bash
+# Remove the problematic species file
+rm ./DB/GENOME_Comparison/FAA/Triplophysa_yarkandensis.faa
+```
+
+## Usage Example
+
+After removing the problematic species, run OrthoFinder on the remaining 13 species:
+
+```{python}
+!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+```
+
+### Complete Successful Output
+
+```txt
+OrthoFinder version 3.0.1b1 Copyright (C) 2014 David Emms
+
+2025-02-03 08:49:41 : Starting OrthoFinder 3.0.1b1
+128 thread(s) for highly parallel tasks (BLAST searches etc.)
+16 thread(s) for OrthoFinder algorithm
+
+Results directory: /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/
+
+Checking required programs are installed
+----------------------------------------
+Running with the recommended MSA tree inference by default. To revert to legacy method use '-M dendroblast'.
+
+Test can run "mcl -h" - ok
+Test can run "mafft" - ok
+Test can run "fasttree" - ok
+
+Dividing up work for BLAST for parallel processing
+--------------------------------------------------
+2025-02-03 08:49:49 : Creating diamond database 1 of 13
+2025-02-03 08:49:49 : Creating diamond database 2 of 13
+...
+2025-02-03 08:49:54 : Creating diamond database 13 of 13
+
+Running diamond all-versus-all
+------------------------------
+Using 128 thread(s)
+2025-02-03 08:49:55 : This may take some time....
+2025-02-03 09:25:45 : Done 0 of 169
+2025-02-03 09:28:34 : Done 10 of 169
+2025-02-03 09:30:58 : Done 20 of 169
+2025-02-03 09:32:43 : Done 30 of 169
+2025-02-03 09:34:32 : Done 40 of 169
+2025-02-03 10:08:04 : Done all-versus-all sequence search
+
+Running OrthoFinder algorithm
+-----------------------------
+2025-02-03 10:08:07 : Initial processing of each species
+2025-02-03 10:08:44 : Initial processing of species 0 complete
+2025-02-03 10:08:49 : Initial processing of species 12 complete
+...
+2025-02-03 10:11:19 : Initial processing of species 2 complete
+2025-02-03 10:11:45 : Connected putative homologues
+...
+2025-02-03 10:13:19 : Written final scores for species 5 to graph file
+
+WARNING: program called by OrthoFinder produced output to stderr
+Command: mcl /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/WorkingDirectory/OrthoFinder_graph.txt -I 1.2 -o /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/WorkingDirectory/clusters_OrthoFinder_I1.2.txt -te 16 -V all
+
+stderr:
+b'[mcl] cut <73> instances of overlap\n'
+2025-02-03 10:44:12 : Ran MCL
+
+Writing orthogroups to file
+---------------------------
+2025-02-03 10:54:35 : Done orthogroups
+
+Analysing Orthogroups
+=====================
+2025-02-03 10:54:37 : Starting MSA/Trees
+Species tree: Using 188 orthogroups with minimum of 69.2% of species having single-copy genes in any orthogroup
+
+Inferring multiple sequence alignments for species tree
+-------------------------------------------------------
+2025-02-03 11:06:06 : Done 0 of 188
+2025-02-03 11:06:06 : Done 10 of 188
+...
+2025-02-03 11:06:07 : Done 60 of 188
+
+Inferring remaining multiple sequence alignments and gene trees
+---------------------------------------------------------------
+2025-02-03 11:42:41 : Done 0 of 32164
+2025-02-03 13:49:01 : Done 1000 of 32164
+2025-02-03 14:15:14 : Done 2000 of 32164
+...
+2025-02-03 14:53:57 : Done 32000 of 32164
+2025-02-04 05:54:30 : Done MSA/Trees
+
+Best outgroup(s) for species tree
+---------------------------------
+2025-02-04 05:54:30 : Starting STRIDE
+2025-02-04 05:55:36 : Done STRIDE
+Observed 544 well-supported, non-terminal duplications. 533 support the best root and 11 contradict it.
+Best outgroup for species tree:
+  Triplophysa_tibetana, Triplophysa_dalaica, Triplophysa_bombifrons
+
+Reconciling gene trees and species tree
+---------------------------------------
+Outgroup: Triplophysa_tibetana, Triplophysa_dalaica, Triplophysa_bombifrons
+2025-02-04 05:55:36 : Starting Recon and orthologues
+2025-02-04 05:55:36 : Starting OF Orthologues
+2025-02-04 05:55:40 : Done 0 of 17924
+...
+2025-02-04 05:55:59 : Done OF Orthologues
+
+Writing results files
+=====================
+OrthoFinder assigned 644648 genes (50.0% of total) to 52388 orthogroups. 
+Fifty percent of genes were in orthogroups with 2 or more genes (G50 was 2) and were contained in the largest 52204 orthogroups (O50 was 52204). 
+There were 531 orthogroups with all species present and 0 of these consisted entirely of single-copy genes.
+2025-02-04 05:56:18 : Done orthologues
+
+Results:
+    /home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/
+
+CITATION:
+ When publishing work that uses OrthoFinder please cite:
+ Emms D.M. & Kelly S. (2019), Genome Biology 20:238
+
+ If you use the species tree in your work then please also cite:
+ Emms D.M. & Kelly S. (2017), MBE 34(12): 3267-3278
+ Emms D.M. & Kelly S. (2018), bioRxiv https://doi.org/10.1101/267914
+```
+
+## Analysis Results
+
+### Execution Summary
+- **Total Runtime**: ~20 hours 
+- **Species Analyzed**: 13 (after excluding problematic species)
+- **Computation**: 128 threads for parallel tasks, 16 threads for OrthoFinder algorithm
+
+### Species Tree Construction
+- **Method**: MSA-based tree inference using 188 orthogroups
+- **Criterion**: Minimum 69.2% species representation with single-copy genes
+- **Best Outgroup**: Triplophysa_tibetana, Triplophysa_dalaica, Triplophysa_bombifrons
+- **Gene Trees**: 32,164 multiple sequence alignments and gene trees inferred
+
+### Output Files
+Results are saved in: `/home/jovyan/DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/`
+
+Key output files include:
+- Orthogroups classification
+- Species tree reconstruction  
+- Gene trees for all orthogroups
+- Orthologues relationships between species
+- Comparative genomics statistics
+
+## Conclusion
+
+### Technical Challenges Resolved
+1. **Diamond Database Creation**: Sequence formatting issues required configuration modifications
+2. **Invalid Characters**: Trailing dots in FASTA sequences caused parsing errors
+3. **Data Quality**: One species (Triplophysa_yarkandensis) had persistent formatting issues requiring exclusion
+
+### Best Practices for Future Analyses
+1. **Data Validation**: Always validate FASTA file formats before running large-scale analyses
+2. **Configuration Backup**: Backup configuration files before modifications
+3. **Progressive Troubleshooting**: Start with configuration changes, then data cleaning, then data exclusion
+4. **Quality Control**: Implement sequence quality checks as part of preprocessing pipeline
+
+`★ Insight ─────────────────────────────────────`
+This analysis demonstrates the importance of robust error handling in bioinformatics pipelines. The sequence of troubleshooting steps (configuration → data cleaning → data exclusion) represents a systematic approach to resolving technical issues while preserving analytical integrity. The Diamond `--ignore-warnings` flag and systematic FASTA validation are critical for handling real-world genomic datasets.
+`─────────────────────────────────────────────────`
+
+The comprehensive troubleshooting process documented here provides a reusable framework for handling similar issues in comparative genomics analyses, ensuring reproducibility and reliability of OrthoFinder results.

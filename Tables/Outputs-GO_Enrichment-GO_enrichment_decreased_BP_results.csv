@@ -1,0 +1,4 @@
+"ID","Description","GeneRatio","BgRatio","pvalue","p.adjust","qvalue","geneID","Count"
+"GO:0035235","ionotropic glutamate receptor signaling pathway","8/256","62/22777",4.57015325758603e-07,0.000728939444584972,0.000711981770655508,"evm.model.ctg1244.51/evm.model.ctg3337.167/evm.model.ctg3544.49/evm.model.ctg3600.142/evm.model.ctg3625.63/evm.model.ctg3625.64/evm.model.ctg3668.18/evm.model.ctg3700.3",8
+"GO:1990806","ligand-gated ion channel signaling pathway","8/256","62/22777",4.57015325758603e-07,0.000728939444584972,0.000711981770655508,"evm.model.ctg1244.51/evm.model.ctg3337.167/evm.model.ctg3544.49/evm.model.ctg3600.142/evm.model.ctg3625.63/evm.model.ctg3625.64/evm.model.ctg3668.18/evm.model.ctg3700.3",8
+"GO:0060992","response to fungicide","6/256","44/22777",9.38210395218221e-06,0.00997630386915375,0.00974422024507345,"evm.model.ctg3337.167/evm.model.ctg3544.49/evm.model.ctg3600.142/evm.model.ctg3625.63/evm.model.ctg3668.18/evm.model.ctg3700.3",6

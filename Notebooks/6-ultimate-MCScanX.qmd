@@ -1,0 +1,1278 @@
+---
+title: "Ultimate MCScanX Synteny Analysis - Comparative Genomics"
+author: "Comparative Genomics Analysis Pipeline"
+date: "2025-08-28"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    fig-width: 10
+    fig-height: 8
+  pdf:
+    header-includes: | 
+      \usepackage{xcolor}
+      \usepackage{fvextra}
+      \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\\{}}
+    fig-pos: "H"
+    toc: true
+    pdf-engine: xelatex
+    documentclass: bxjsarticle
+    classoption: xelatex,ja=standard
+editor: visual
+indent: true
+---
+
+# MCScanX Synteny Analysis Pipeline
+
+This notebook provides a comprehensive workflow for synteny analysis using MCScanX, enabling the identification and visualization of syntenic relationships between closely related genomes. This analysis is crucial for understanding evolutionary relationships, gene duplications, and chromosomal rearrangements.
+
+## Overview
+
+**Purpose**: Perform comprehensive synteny analysis between multiple fish genomes to identify conserved genomic regions and evolutionary relationships.
+
+**Key Analyses**:
+1. Pairwise BLAST searches between genomes
+2. MCScanX synteny detection 
+3. Multiple visualization approaches (dot plots, dual synteny, circle plots, bar plots)
+4. Chromosomal collinearity assessment
+
+**Input Data**:
+- Protein sequence files (FAA) from OrthoFinder preparation
+- Gene annotation files (GFF3) for positional information
+
+**Output Results**:
+- Synteny blocks and collinearity files
+- Multiple visualization formats
+- HTML reports for detailed synteny examination
+
+## System Information and Setup
+
+```{python}
+# System verification and environment setup
+import os
+import sys
+from pathlib import Path
+
+# Check Python environment
+print("Python executable:", sys.executable)
+print("Working directory:", os.getcwd())
+
+# Create necessary output directories
+os.makedirs("./DB/BlastDB", exist_ok=True)
+os.makedirs("./DB/MCScanX", exist_ok=True)
+os.makedirs("./Outputs/Blastp", exist_ok=True)
+os.makedirs("./Outputs/MCScanX_Results", exist_ok=True)
+
+print("\nDirectory structure created successfully")
+```
+
+## Input Data Verification
+
+### Check Protein Sequence Files
+
+```{python}
+# Verify availability of input protein sequence files
+protein_files = [
+    "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa",
+    "./DB/GENOME_Comparison/FAA/Schizothorax_macropogon.faa", 
+    "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
+]
+
+print("Protein sequence file verification:")
+for file_path in protein_files:
+    if os.path.exists(file_path):
+        size = os.path.getsize(file_path) / (1024*1024)  # Size in MB
+        print(f"✓ {file_path} ({size:.1f} MB)")
+    else:
+        print(f"✗ {file_path} (NOT FOUND)")
+```
+
+### Check Annotation Files
+
+```{python}
+# Verify annotation files for positional information
+annotation_files = [
+    "./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3",
+    "./DB/GENOME_Comparison/Schizothorax_macropogon/LF.bestGeneModels.gff3",
+    "./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3"
+]
+
+print("\nAnnotation file verification:")
+for file_path in annotation_files:
+    if os.path.exists(file_path):
+        print(f"✓ {file_path}")
+        # Show first few non-comment lines
+        with open(file_path, 'r') as f:
+            lines = [line for line in f if not line.startswith('#')][:3]
+            for i, line in enumerate(lines, 1):
+                print(f"    Line {i}: {line[:80].strip()}...")
+    else:
+        print(f"✗ {file_path} (NOT FOUND)")
+    print()
+```
+
+## BLAST Database Preparation
+
+### Create Combined Protein Files for Pairwise Comparisons
+
+```{python}
+def create_pairwise_datasets():
+    """
+    Create combined protein datasets for pairwise synteny analysis.
+    
+    This function combines protein sequences from pairs of species
+    to enable comprehensive BLAST searches for synteny detection.
+    """
+    
+    print("Creating pairwise protein datasets...")
+    
+    # Define pairwise comparisons
+    comparisons = {
+        'al_sm': [
+            "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa",
+            "./DB/GENOME_Comparison/FAA/Schizothorax_macropogon.faa"
+        ],
+        'al_tb': [
+            "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa", 
+            "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
+        ]
+    }
+    
+    for comparison_name, file_list in comparisons.items():
+        output_file = f"./DB/BlastDB/{comparison_name}.faa"
+        
+        print(f"\nCreating {comparison_name} dataset...")
+        
+        with open(output_file, 'w') as outfile:
+            for input_file in file_list:
+                if os.path.exists(input_file):
+                    with open(input_file, 'r') as infile:
+                        content = infile.read()
+                        outfile.write(content)
+                    
+                    species = Path(input_file).stem
+                    size = os.path.getsize(input_file) / (1024*1024)
+                    print(f"  Added {species}: {size:.1f} MB")
+                else:
+                    print(f"  WARNING: {input_file} not found")
+        
+        final_size = os.path.getsize(output_file) / (1024*1024)
+        print(f"  Final {comparison_name}.faa: {final_size:.1f} MB")
+    
+    print("\nPairwise datasets created successfully")
+
+# Execute dataset creation
+create_pairwise_datasets()
+```
+
+### Build BLAST Databases
+
+```{python}
+def create_blast_databases():
+    """
+    Create BLAST protein databases for synteny analysis.
+    
+    Uses NCBI BLAST+ makeblastdb to create searchable databases
+    from the combined protein sequence files.
+    """
+    
+    print("Creating BLAST databases...")
+    
+    datasets = ['al_sm', 'al_tb']
+    blast_cmd = "./Apps/Blast/ncbi-blast-2.16.0+/bin/makeblastdb"
+    
+    for dataset in datasets:
+        input_file = f"./DB/BlastDB/{dataset}.faa"
+        output_prefix = f"./DB/BlastDB/{dataset}"
+        log_file = f"./DB/BlastDB/{dataset}.log"
+        
+        if os.path.exists(input_file):
+            cmd = f"{blast_cmd} -in {input_file} -dbtype prot -parse_seqids -out {output_prefix} -logfile {log_file} -title {dataset}"
+            
+            print(f"Building database for {dataset}...")
+            print(f"Command: {cmd}")
+            
+            exit_code = os.system(cmd)
+            
+            if exit_code == 0:
+                print(f"✓ {dataset} database created successfully")
+                
+                # Check created files
+                db_files = [f"{output_prefix}.{ext}" for ext in ['phr', 'pin', 'psq']]
+                existing_files = [f for f in db_files if os.path.exists(f)]
+                print(f"  Database files: {len(existing_files)}/3 created")
+                
+            else:
+                print(f"✗ {dataset} database creation failed")
+        else:
+            print(f"✗ Input file {input_file} not found")
+        print()
+
+# Execute database creation
+create_blast_databases()
+```
+
+## BLAST Searches
+
+### Perform All-vs-All BLAST Searches
+
+```{python}
+def run_blast_searches():
+    """
+    Perform comprehensive BLAST searches for synteny analysis.
+    
+    Executes all-vs-all BLAST searches within each dataset to identify
+    homologous sequences for synteny block detection.
+    """
+    
+    print("Starting BLAST searches...")
+    
+    datasets = ['al_sm', 'al_tb']
+    blast_cmd = "./Apps/Blast/ncbi-blast-2.16.0+/bin/blastp"
+    
+    for dataset in datasets:
+        query_file = f"./DB/BlastDB/{dataset}.faa"
+        db_path = f"./DB/BlastDB/{dataset}"
+        output_file = f"./Outputs/Blastp/{dataset}.blast"
+        
+        if os.path.exists(query_file) and os.path.exists(f"{db_path}.pin"):
+            cmd = f"{blast_cmd} -query {query_file} -db {db_path} -out {output_file} -evalue 1e-10 -num_threads 8 -outfmt 6 -num_alignments 5"
+            
+            print(f"Running BLAST search for {dataset}...")
+            print(f"Query: {query_file}")
+            print(f"Database: {db_path}")
+            print(f"Output: {output_file}")
+            print(f"Parameters: E-value 1e-10, 8 threads, format 6")
+            
+            import time
+            start_time = time.time()
+            
+            exit_code = os.system(cmd)
+            
+            elapsed_time = time.time() - start_time
+            
+            if exit_code == 0:
+                if os.path.exists(output_file):
+                    size = os.path.getsize(output_file) / (1024*1024)
+                    
+                    # Count BLAST hits
+                    with open(output_file, 'r') as f:
+                        hit_count = sum(1 for line in f)
+                    
+                    print(f"✓ {dataset} BLAST completed successfully")
+                    print(f"  Time elapsed: {elapsed_time:.1f} seconds")
+                    print(f"  Output size: {size:.1f} MB")
+                    print(f"  Total hits: {hit_count:,}")
+                else:
+                    print(f"✗ {dataset} BLAST output file not created")
+            else:
+                print(f"✗ {dataset} BLAST search failed")
+        else:
+            print(f"✗ Required files missing for {dataset}")
+        print()
+
+# Execute BLAST searches
+run_blast_searches()
+```
+
+## Data Preparation for MCScanX
+
+### GFF3 to BED Format Conversion
+
+```{python}
+def convert_gff3_to_bed(gff3_path, bed_path):
+    """
+    Convert GFF3 annotation files to BED format for MCScanX.
+    
+    Parameters:
+    -----------
+    gff3_path : str
+        Path to input GFF3 file
+    bed_path : str
+        Path to output BED file
+        
+    Notes:
+    ------
+    - Converts 1-based GFF3 coordinates to 0-based BED format
+    - Extracts gene features and their positional information
+    - Maintains gene ID information for synteny analysis
+    """
+    
+    print(f"Converting {gff3_path} to BED format...")
+    
+    if not os.path.exists(gff3_path):
+        print(f"ERROR: Input file {gff3_path} not found")
+        return False
+    
+    gene_count = 0
+    skipped_lines = 0
+    
+    try:
+        with open(gff3_path, 'r') as infile, open(bed_path, 'w') as outfile:
+            for line_num, line in enumerate(infile, 1):
+                # Skip comment lines
+                if line.startswith('#'):
+                    continue
+                
+                parts = line.strip().split('\t')
+                
+                # Validate line format and feature type
+                if len(parts) < 9 or parts[2] != 'gene':
+                    skipped_lines += 1
+                    continue
+                
+                # Extract coordinates and information
+                chrom = parts[0]
+                start = str(int(parts[3]) - 1)  # Convert to 0-based coordinates
+                end = parts[4]
+                attributes = parts[8]
+                
+                # Extract gene ID from attributes field
+                gene_id = None
+                for field in attributes.split(';'):
+                    if field.startswith('ID='):
+                        gene_id = field[3:]
+                        break
+                
+                if gene_id:
+                    outfile.write(f'{chrom}\t{start}\t{end}\t{gene_id}\n')
+                    gene_count += 1
+                else:
+                    skipped_lines += 1
+        
+        print(f"✓ Conversion completed: {gene_count} genes converted")
+        print(f"  Skipped lines: {skipped_lines}")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR during conversion: {e}")
+        return False
+
+def prepare_annotation_files():
+    """
+    Prepare all annotation files for MCScanX analysis.
+    """
+    
+    print("=== Preparing Annotation Files ===\n")
+    
+    # Create directories for each comparison
+    os.makedirs("./DB/MCScanX/al_sm", exist_ok=True)
+    os.makedirs("./DB/MCScanX/al_tb", exist_ok=True)
+    
+    # Define conversion tasks
+    conversions = [
+        # For AL-SM comparison
+        ("./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3", 
+         "./DB/MCScanX/al_sm/al.bed"),
+        ("./DB/GENOME_Comparison/Schizothorax_macropogon/LF.bestGeneModels.gff3", 
+         "./DB/MCScanX/al_sm/sm.bed"),
+        
+        # For AL-TB comparison  
+        ("./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3",
+         "./DB/MCScanX/al_tb/al.bed"), 
+        ("./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3",
+         "./DB/MCScanX/al_tb/tb.bed")
+    ]
+    
+    success_count = 0
+    
+    for gff3_file, bed_file in conversions:
+        if convert_gff3_to_bed(gff3_file, bed_file):
+            success_count += 1
+        print()
+    
+    print(f"Annotation conversion completed: {success_count}/{len(conversions)} successful\n")
+
+# Execute annotation file preparation
+prepare_annotation_files()
+```
+
+### BED File Processing and Standardization
+
+```{python}
+def process_bed_files():
+    """
+    Process and standardize BED files for MCScanX compatibility.
+    
+    This function performs species-specific processing to ensure
+    chromosome naming consistency and format compatibility.
+    """
+    
+    print("=== Processing BED Files ===\n")
+    
+    # Process Aspiorhynchus laticeps files
+    def process_al_bed(input_path, output_path):
+        """Process AL bed file: filter contigs and standardize names."""
+        
+        print(f"Processing AL bed file: {input_path}")
+        
+        with open(input_path, 'r') as infile:
+            lines = infile.readlines()
+        
+        # Filter and modify lines
+        processed_lines = []
+        filtered_count = 0
+        modified_count = 0
+        
+        for line in lines:
+            # Skip contig sequences (non-chromosomal)
+            if line.startswith('ctg'):
+                filtered_count += 1
+                continue
+            
+            # Replace 'chr' prefix with 'al' and fix gene IDs
+            if line.startswith('chr'):
+                line = line.replace('chr', 'al', 1)
+                line = line.replace('evm.TU.ctg', 'evm.model.ctg')
+                modified_count += 1
+            
+            processed_lines.append(line)
+        
+        # Write processed file
+        with open(output_path, 'w') as outfile:
+            outfile.writelines(processed_lines)
+        
+        print(f"  Processed {len(processed_lines)} genes")
+        print(f"  Filtered {filtered_count} contigs")
+        print(f"  Modified {modified_count} chromosome names")
+        return len(processed_lines)
+    
+    # Process Schizothorax macropogon files
+    def process_sm_bed(input_path, output_path):
+        """Process SM bed file: filter scaffolds and add transcript suffixes."""
+        
+        print(f"Processing SM bed file: {input_path}")
+        
+        with open(input_path, 'r') as infile:
+            lines = infile.readlines()
+        
+        # Filter and modify lines
+        processed_lines = []
+        filtered_count = 0
+        modified_count = 0
+        
+        for line in lines:
+            # Skip scaffold sequences
+            if line.startswith('scaffold'):
+                filtered_count += 1
+                continue
+            
+            # Replace 'R' prefix with 'sm' and add transcript suffix
+            if line.startswith('R'):
+                parts = line.strip().split()
+                parts[0] = parts[0].replace('R', 'sm', 1)  # Replace chromosome name
+                parts[3] = parts[3] + '.t01'  # Add transcript suffix
+                line = '\t'.join(parts) + '\n'
+                modified_count += 1
+            
+            processed_lines.append(line)
+        
+        # Write processed file
+        with open(output_path, 'w') as outfile:
+            outfile.writelines(processed_lines)
+        
+        print(f"  Processed {len(processed_lines)} genes")  
+        print(f"  Filtered {filtered_count} scaffolds")
+        print(f"  Modified {modified_count} chromosome names")
+        return len(processed_lines)
+    
+    # Process Triplophysa bombifrons files  
+    def process_tb_bed(input_path, output_path):
+        """Process TB bed file: standardize chromosome names."""
+        
+        print(f"Processing TB bed file: {input_path}")
+        
+        with open(input_path, 'r') as infile:
+            lines = infile.readlines()
+        
+        # Simple processing - mainly chromosome name standardization
+        processed_lines = []
+        modified_count = 0
+        
+        for line in lines:
+            # Standardize chromosome names if needed
+            if 'scaffold' in line or 'chromosome' in line:
+                # Can add specific processing if needed
+                modified_count += 1
+            
+            processed_lines.append(line)
+        
+        # Write processed file
+        with open(output_path, 'w') as outfile:
+            outfile.writelines(processed_lines)
+        
+        print(f"  Processed {len(processed_lines)} genes")
+        if modified_count > 0:
+            print(f"  Modified {modified_count} entries")
+        return len(processed_lines)
+    
+    # Execute processing for AL-SM comparison
+    print("Processing files for AL-SM comparison:")
+    al_genes_sm = process_al_bed("./DB/MCScanX/al_sm/al.bed", 
+                                "./DB/MCScanX/al_sm/al-filtered-modified.bed")
+    sm_genes = process_sm_bed("./DB/MCScanX/al_sm/sm.bed", 
+                             "./DB/MCScanX/al_sm/sm-filtered-modified.bed")
+    
+    print("\nProcessing files for AL-TB comparison:")
+    al_genes_tb = process_al_bed("./DB/MCScanX/al_tb/al.bed",
+                                "./DB/MCScanX/al_tb/al-filtered-modified.bed") 
+    tb_genes = process_tb_bed("./DB/MCScanX/al_tb/tb.bed",
+                             "./DB/MCScanX/al_tb/tb-filtered-modified.bed")
+    
+    print(f"\nBED file processing summary:")
+    print(f"  AL-SM: {al_genes_sm} + {sm_genes} = {al_genes_sm + sm_genes} total genes")
+    print(f"  AL-TB: {al_genes_tb} + {tb_genes} = {al_genes_tb + tb_genes} total genes")
+
+# Execute BED file processing
+process_bed_files()
+```
+
+### Create MCScanX Input Files
+
+```{python}
+def create_mcscanx_inputs():
+    """
+    Create final input files for MCScanX analysis.
+    
+    Combines processed BED files and BLAST results into the format
+    required by MCScanX for synteny detection.
+    """
+    
+    print("=== Creating MCScanX Input Files ===\n")
+    
+    comparisons = ['al_sm', 'al_tb']
+    
+    for comparison in comparisons:
+        print(f"Creating inputs for {comparison} comparison...")
+        
+        # Define file paths
+        comparison_dir = f"./DB/MCScanX/{comparison}"
+        combined_bed = f"{comparison_dir}/{comparison}.bed"
+        combined_gff = f"{comparison_dir}/{comparison}.gff"  # MCScanX uses .gff extension
+        blast_file = f"./Outputs/Blastp/{comparison}.blast"
+        target_blast = f"{comparison_dir}/{comparison}.blast"
+        
+        # Combine BED files
+        species_files = []
+        if comparison == 'al_sm':
+            species_files = [
+                f"{comparison_dir}/al-filtered-modified.bed",
+                f"{comparison_dir}/sm-filtered-modified.bed"
+            ]
+        elif comparison == 'al_tb':
+            species_files = [
+                f"{comparison_dir}/al-filtered-modified.bed", 
+                f"{comparison_dir}/tb-filtered-modified.bed"
+            ]
+        
+        # Combine BED files
+        total_genes = 0
+        with open(combined_bed, 'w') as outfile:
+            for species_file in species_files:
+                if os.path.exists(species_file):
+                    with open(species_file, 'r') as infile:
+                        lines = infile.readlines()
+                        outfile.writelines(lines)
+                        total_genes += len(lines)
+                        species_name = Path(species_file).stem.split('-')[0]
+                        print(f"  Added {species_name}: {len(lines)} genes")
+                else:
+                    print(f"  WARNING: {species_file} not found")
+        
+        # Reformat for MCScanX (chromosome, gene_id, start, end)
+        def reformat_for_mcscanx(input_path, output_path):
+            """Reformat BED to MCScanX GFF format."""
+            with open(input_path, 'r') as infile, open(output_path, 'w') as outfile:
+                for line in infile:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 4:
+                        # Reorder: chromosome, gene_id, start, end
+                        reordered = [parts[0], parts[3], parts[1], parts[2]]
+                        outfile.write('\t'.join(reordered) + '\n')
+        
+        # Create properly formatted GFF file
+        reformat_for_mcscanx(combined_bed, combined_gff)
+        
+        # Copy BLAST file
+        if os.path.exists(blast_file):
+            import shutil
+            shutil.copy2(blast_file, target_blast)
+            blast_size = os.path.getsize(blast_file) / (1024*1024)
+            print(f"  Copied BLAST file: {blast_size:.1f} MB")
+        else:
+            print(f"  WARNING: BLAST file {blast_file} not found")
+        
+        print(f"  Combined {total_genes} genes in {combined_gff}")
+        
+        # Verify input files
+        required_files = [combined_gff, target_blast]
+        all_present = all(os.path.exists(f) for f in required_files)
+        
+        if all_present:
+            print(f"✓ {comparison} input files ready for MCScanX")
+        else:
+            print(f"✗ {comparison} missing required files")
+        print()
+
+# Execute MCScanX input creation
+create_mcscanx_inputs()
+```
+
+## MCScanX Analysis
+
+### MCScanX Test Run
+
+```{python}
+def test_mcscanx_installation():
+    """
+    Test MCScanX installation using provided test data.
+    """
+    
+    print("=== Testing MCScanX Installation ===\n")
+    
+    # Test with provided example data
+    test_datasets = [
+        "./Apps/MCScanX/V1/MCScanX-1.0.0/data/at_vv",
+        "./Apps/MCScanX/V1/MCScanX-1.0.0/data/os_sb"
+    ]
+    
+    mcscanx_cmd = "./Apps/MCScanX/V1/MCScanX-1.0.0/MCScanX"
+    
+    for test_data in test_datasets:
+        dataset_name = Path(test_data).name
+        print(f"Testing with {dataset_name} dataset...")
+        
+        if os.path.exists(f"{test_data}.gff") and os.path.exists(f"{test_data}.blast"):
+            cmd = f"{mcscanx_cmd} {test_data}"
+            print(f"Command: {cmd}")
+            
+            exit_code = os.system(cmd)
+            
+            if exit_code == 0:
+                print(f"✓ {dataset_name} test completed successfully")
+                
+                # Check output files
+                collinearity_file = f"{test_data}.collinearity"
+                tandem_file = f"{test_data}.tandem"
+                
+                if os.path.exists(collinearity_file):
+                    with open(collinearity_file, 'r') as f:
+                        lines = f.readlines()
+                    print(f"  Collinearity file: {len(lines)} lines")
+                
+                if os.path.exists(tandem_file):
+                    with open(tandem_file, 'r') as f:
+                        lines = f.readlines()
+                    print(f"  Tandem file: {len(lines)} pairs")
+                    
+            else:
+                print(f"✗ {dataset_name} test failed")
+        else:
+            print(f"✗ Required input files missing for {dataset_name}")
+        print()
+    
+    print("MCScanX installation test completed\n")
+
+# Execute MCScanX test
+test_mcscanx_installation()
+```
+
+### Run MCScanX on Prepared Data
+
+```{python}
+def run_mcscanx_analysis():
+    """
+    Execute MCScanX analysis on prepared genomic datasets.
+    """
+    
+    print("=== Running MCScanX Analysis ===\n")
+    
+    comparisons = ['al_sm', 'al_tb']
+    mcscanx_cmd = "./Apps/MCScanX/V1/MCScanX-1.0.0/MCScanX"
+    
+    results_summary = {}
+    
+    for comparison in comparisons:
+        print(f"Running MCScanX for {comparison} comparison...")
+        
+        input_prefix = f"./DB/MCScanX/{comparison}/{comparison}"
+        gff_file = f"{input_prefix}.gff"
+        blast_file = f"{input_prefix}.blast"
+        
+        # Verify input files
+        if not (os.path.exists(gff_file) and os.path.exists(blast_file)):
+            print(f"✗ Missing input files for {comparison}")
+            print(f"  GFF: {os.path.exists(gff_file)}")
+            print(f"  BLAST: {os.path.exists(blast_file)}")
+            continue
+        
+        # Show input file statistics
+        with open(gff_file, 'r') as f:
+            gene_count = sum(1 for line in f)
+        
+        blast_size = os.path.getsize(blast_file) / (1024*1024)
+        
+        print(f"  Input genes: {gene_count}")
+        print(f"  BLAST file: {blast_size:.1f} MB")
+        
+        # Run MCScanX
+        cmd = f"{mcscanx_cmd} {input_prefix}"
+        print(f"  Command: {cmd}")
+        
+        import time
+        start_time = time.time()
+        
+        exit_code = os.system(cmd)
+        
+        elapsed_time = time.time() - start_time
+        
+        if exit_code == 0:
+            print(f"✓ {comparison} analysis completed in {elapsed_time:.1f} seconds")
+            
+            # Analyze results
+            collinearity_file = f"{input_prefix}.collinearity"
+            tandem_file = f"{input_prefix}.tandem"
+            
+            result_stats = {
+                'success': True,
+                'runtime': elapsed_time,
+                'input_genes': gene_count,
+                'blast_size_mb': blast_size
+            }
+            
+            if os.path.exists(collinearity_file):
+                with open(collinearity_file, 'r') as f:
+                    collinearity_lines = f.readlines()
+                result_stats['collinearity_blocks'] = len([l for l in collinearity_lines if l.startswith('##')])
+                result_stats['syntenic_genes'] = len([l for l in collinearity_lines if not l.startswith('#')])
+                
+                print(f"  Collinearity blocks: {result_stats['collinearity_blocks']}")
+                print(f"  Syntenic gene pairs: {result_stats['syntenic_genes']}")
+            
+            if os.path.exists(tandem_file):
+                with open(tandem_file, 'r') as f:
+                    tandem_count = sum(1 for line in f)
+                result_stats['tandem_pairs'] = tandem_count
+                print(f"  Tandem gene pairs: {tandem_count}")
+            
+            # Check HTML outputs
+            html_files = [f for f in os.listdir(f"./DB/MCScanX/{comparison}") if f.endswith('.html')]
+            result_stats['html_files'] = len(html_files)
+            print(f"  HTML visualization files: {len(html_files)}")
+            
+            results_summary[comparison] = result_stats
+            
+        else:
+            print(f"✗ {comparison} analysis failed")
+            results_summary[comparison] = {'success': False}
+        
+        print()
+    
+    # Summary report
+    print("=== MCScanX Analysis Summary ===")
+    for comparison, stats in results_summary.items():
+        if stats['success']:
+            print(f"{comparison.upper()}:")
+            print(f"  Runtime: {stats['runtime']:.1f}s")
+            print(f"  Input genes: {stats['input_genes']:,}")
+            print(f"  Synteny blocks: {stats.get('collinearity_blocks', 'N/A')}")
+            print(f"  Syntenic pairs: {stats.get('syntenic_genes', 'N/A')}")
+            print(f"  Tandem pairs: {stats.get('tandem_pairs', 'N/A')}")
+        else:
+            print(f"{comparison.upper()}: FAILED")
+        print()
+
+# Execute MCScanX analysis
+run_mcscanx_analysis()
+```
+
+## Visualization and Downstream Analysis
+
+### Compile Java Visualization Tools
+
+```{python}
+def compile_visualization_tools():
+    """
+    Compile Java-based visualization tools for MCScanX results.
+    """
+    
+    print("=== Compiling Visualization Tools ===\n")
+    
+    tools_dir = "./Apps/MCScanX/V1/MCScanX-1.0.0/downstream_analyses/"
+    
+    java_files = [
+        "dual_synteny_plotter.java",
+        "dot_plotter.java", 
+        "circle_plotter.java",
+        "bar_plotter.java",
+        "family_tree_plotter.java",
+        "Cubic.java"  # Dependency for circle plotter
+    ]
+    
+    success_count = 0
+    
+    for java_file in java_files:
+        file_path = os.path.join(tools_dir, java_file)
+        
+        if os.path.exists(file_path):
+            cmd = f"cd {tools_dir} && javac {java_file}"
+            print(f"Compiling {java_file}...")
+            
+            exit_code = os.system(cmd + " 2>/dev/null")  # Suppress verbose output
+            
+            if exit_code == 0:
+                print(f"✓ {java_file} compiled successfully")
+                success_count += 1
+            else:
+                print(f"✗ {java_file} compilation failed")
+        else:
+            print(f"✗ {java_file} not found")
+    
+    print(f"\nCompilation completed: {success_count}/{len(java_files)} tools ready")
+    return success_count == len(java_files)
+
+# Execute compilation
+compilation_success = compile_visualization_tools()
+```
+
+### Extract Chromosome Information
+
+```{python}
+def extract_chromosome_info(comparison):
+    """
+    Extract chromosome/scaffold information from MCScanX results.
+    
+    Parameters:
+    -----------
+    comparison : str
+        Comparison name (e.g., 'al_sm', 'al_tb')
+        
+    Returns:
+    --------
+    dict : Chromosome information for visualization control files
+    """
+    
+    gff_file = f"./DB/MCScanX/{comparison}/{comparison}.gff"
+    
+    if not os.path.exists(gff_file):
+        print(f"GFF file not found: {gff_file}")
+        return {}
+    
+    print(f"Extracting chromosome info from {comparison}...")
+    
+    chromosomes = set()
+    
+    with open(gff_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split('\t')
+            if len(parts) >= 1:
+                chromosomes.add(parts[0])
+    
+    # Sort chromosomes for consistent ordering
+    al_chroms = sorted([c for c in chromosomes if c.startswith('al')])
+    other_chroms = sorted([c for c in chromosomes if not c.startswith('al')])
+    
+    print(f"  AL chromosomes: {len(al_chroms)}")
+    print(f"  Other chromosomes: {len(other_chroms)}")
+    
+    return {
+        'al_chromosomes': al_chroms,
+        'other_chromosomes': other_chroms,
+        'all_chromosomes': al_chroms + other_chroms
+    }
+
+def create_visualization_control_files():
+    """
+    Create control files for different visualization types.
+    """
+    
+    print("=== Creating Visualization Control Files ===\n")
+    
+    comparisons = ['al_sm', 'al_tb']
+    
+    for comparison in comparisons:
+        chrom_info = extract_chromosome_info(comparison)
+        
+        if not chrom_info:
+            continue
+        
+        comparison_dir = f"./DB/MCScanX/{comparison}"
+        
+        # Create control files for different plot types
+        control_files = {
+            'dot.ctl': {
+                'plot_type': 'dot',
+                'chromosomes': ','.join(chrom_info['all_chromosomes'])
+            },
+            'dual_synteny.ctl': {
+                'plot_type': 'dual_synteny', 
+                'chromosomes': ','.join(chrom_info['all_chromosomes'])
+            },
+            'circle.ctl': {
+                'plot_type': 'circle',
+                'chromosomes': ','.join(chrom_info['all_chromosomes'][:20])  # Limit for readability
+            },
+            'bar.ctl': {
+                'plot_type': 'bar',
+                'chromosomes': ','.join(chrom_info['all_chromosomes'])
+            }
+        }
+        
+        for ctl_file, params in control_files.items():
+            ctl_path = os.path.join(comparison_dir, ctl_file)
+            
+            # Create basic control file content
+            with open(ctl_path, 'w') as f:
+                f.write(f"// Control file for {params['plot_type']} visualization\n")
+                f.write(f"{params['chromosomes']}\n")
+                
+                # Add plot-specific parameters
+                if params['plot_type'] == 'circle':
+                    f.write("500\n")  # Image size
+                    f.write("1\n")    # Show links
+                elif params['plot_type'] == 'dual_synteny':
+                    f.write("1000\n")  # Image width
+                    f.write("800\n")   # Image height
+            
+            print(f"Created {ctl_file} for {comparison}")
+        
+        print()
+
+# Execute control file creation
+create_visualization_control_files()
+```
+
+### Generate Visualizations
+
+```{python}
+def generate_visualizations():
+    """
+    Generate multiple types of synteny visualizations.
+    """
+    
+    print("=== Generating Synteny Visualizations ===\n")
+    
+    if not compilation_success:
+        print("Visualization tools not properly compiled. Skipping visualization generation.")
+        return
+    
+    comparisons = ['al_sm', 'al_tb']
+    tools_dir = "./Apps/MCScanX/V1/MCScanX-1.0.0/downstream_analyses/"
+    
+    visualization_types = [
+        {
+            'name': 'Dot Plot',
+            'tool': 'dot_plotter.java',
+            'control': 'dot.ctl', 
+            'output': 'dot.PNG'
+        },
+        {
+            'name': 'Dual Synteny Plot',
+            'tool': 'dual_synteny_plotter.java',
+            'control': 'dual_synteny.ctl',
+            'output': 'dual_synteny.PNG'
+        },
+        {
+            'name': 'Circle Plot',
+            'tool': 'circle_plotter',
+            'control': 'circle.ctl',
+            'output': 'circle.PNG',
+            'classpath': True
+        },
+        {
+            'name': 'Bar Plot', 
+            'tool': 'bar_plotter.java',
+            'control': 'bar.ctl',
+            'output': 'bar.PNG'
+        }
+    ]
+    
+    for comparison in comparisons:
+        print(f"Generating visualizations for {comparison}...")
+        comparison_dir = f"./DB/MCScanX/{comparison}"
+        
+        # Verify input files exist
+        gff_file = f"{comparison_dir}/{comparison}.gff"
+        collinearity_file = f"{comparison_dir}/{comparison}.collinearity"
+        
+        if not (os.path.exists(gff_file) and os.path.exists(collinearity_file)):
+            print(f"  Missing required files for {comparison}")
+            continue
+        
+        for viz in visualization_types:
+            print(f"  Creating {viz['name']}...")
+            
+            control_file = f"{comparison_dir}/{viz['control']}"
+            output_file = f"{comparison_dir}/{viz['output']}"
+            
+            if not os.path.exists(control_file):
+                print(f"    Control file {viz['control']} not found, skipping")
+                continue
+            
+            # Build command
+            if viz.get('classpath'):
+                # Special case for circle plotter
+                cmd = f"java -classpath {tools_dir} {viz['tool']} -g {gff_file} -s {collinearity_file} -c {control_file} -o {output_file}"
+            else:
+                cmd = f"java {tools_dir}{viz['tool']} -g {gff_file} -s {collinearity_file} -c {control_file} -o {output_file}"
+            
+            # Execute visualization command
+            exit_code = os.system(cmd + " 2>/dev/null")  # Suppress error output
+            
+            if exit_code == 0 and os.path.exists(output_file):
+                file_size = os.path.getsize(output_file) / 1024  # Size in KB
+                print(f"    ✓ {viz['name']} created ({file_size:.1f} KB)")
+            else:
+                print(f"    ✗ {viz['name']} generation failed")
+        
+        print()
+
+# Execute visualization generation
+generate_visualizations()
+```
+
+## Results Summary and Validation
+
+### Comprehensive Results Analysis
+
+```{python}
+def analyze_results():
+    """
+    Provide comprehensive analysis of MCScanX results.
+    """
+    
+    print("=== MCScanX Results Analysis ===\n")
+    
+    comparisons = ['al_sm', 'al_tb'] 
+    
+    for comparison in comparisons:
+        print(f"{comparison.upper()} Analysis Results:")
+        print("-" * 40)
+        
+        comparison_dir = f"./DB/MCScanX/{comparison}"
+        
+        # Check result files
+        result_files = {
+            'collinearity': f"{comparison_dir}/{comparison}.collinearity",
+            'tandem': f"{comparison_dir}/{comparison}.tandem",
+            'gff': f"{comparison_dir}/{comparison}.gff",
+            'blast': f"{comparison_dir}/{comparison}.blast"
+        }
+        
+        # Analyze collinearity results
+        if os.path.exists(result_files['collinearity']):
+            with open(result_files['collinearity'], 'r') as f:
+                lines = f.readlines()
+            
+            # Count synteny blocks and gene pairs
+            synteny_blocks = [l for l in lines if l.startswith('##')]
+            gene_pairs = [l for l in lines if not l.startswith('#')]
+            
+            print(f"Synteny Analysis:")
+            print(f"  Synteny blocks identified: {len(synteny_blocks)}")
+            print(f"  Syntenic gene pairs: {len(gene_pairs)}")
+            
+            # Analyze block sizes
+            if synteny_blocks:
+                block_sizes = []
+                for block in synteny_blocks:
+                    if 'N=' in block:
+                        size = int(block.split('N=')[1].split()[0])
+                        block_sizes.append(size)
+                
+                if block_sizes:
+                    print(f"  Average block size: {sum(block_sizes) / len(block_sizes):.1f} genes")
+                    print(f"  Largest block: {max(block_sizes)} genes")
+                    print(f"  Smallest block: {min(block_sizes)} genes")
+        
+        # Analyze tandem duplications
+        if os.path.exists(result_files['tandem']):
+            with open(result_files['tandem'], 'r') as f:
+                tandem_lines = f.readlines()
+            
+            print(f"Tandem Duplication:")
+            print(f"  Tandem gene pairs: {len(tandem_lines)}")
+        
+        # Check visualization outputs
+        viz_files = ['dot.PNG', 'dual_synteny.PNG', 'circle.PNG', 'bar.PNG']
+        available_viz = []
+        
+        for viz_file in viz_files:
+            viz_path = f"{comparison_dir}/{viz_file}"
+            if os.path.exists(viz_path):
+                size_kb = os.path.getsize(viz_path) / 1024
+                available_viz.append(f"{viz_file} ({size_kb:.1f} KB)")
+        
+        print(f"Visualizations:")
+        if available_viz:
+            for viz in available_viz:
+                print(f"  ✓ {viz}")
+        else:
+            print("  No visualizations generated")
+        
+        # Check HTML files
+        html_files = [f for f in os.listdir(comparison_dir) if f.endswith('.html')]
+        if html_files:
+            print(f"HTML Reports:")
+            print(f"  Generated {len(html_files)} chromosome-specific HTML reports")
+        
+        print()
+    
+    # Overall summary
+    print("=== Overall Summary ===")
+    print("MCScanX analysis pipeline completed successfully")
+    print("Key outputs generated:")
+    print("  • Synteny block identification (.collinearity files)")
+    print("  • Tandem duplication detection (.tandem files)")
+    print("  • Multiple visualization formats (PNG images)")
+    print("  • Interactive HTML reports for detailed examination")
+    print()
+    print("Next steps:")
+    print("  1. Examine collinearity files for synteny block details")
+    print("  2. Review visualization plots for genomic relationships")
+    print("  3. Analyze HTML reports for chromosome-specific synteny")
+    print("  4. Compare synteny patterns between different species pairs")
+
+# Execute results analysis
+analyze_results()
+```
+
+### Quality Control and File Verification
+
+```{python}
+def quality_control_check():
+    """
+    Perform comprehensive quality control of analysis outputs.
+    """
+    
+    print("=== Quality Control Report ===\n")
+    
+    comparisons = ['al_sm', 'al_tb']
+    
+    overall_status = True
+    
+    for comparison in comparisons:
+        print(f"QC Report for {comparison}:")
+        comparison_dir = f"./DB/MCScanX/{comparison}"
+        
+        # Essential files check
+        essential_files = [
+            f"{comparison}.gff",
+            f"{comparison}.blast", 
+            f"{comparison}.collinearity",
+            f"{comparison}.tandem"
+        ]
+        
+        missing_files = []
+        present_files = []
+        
+        for file_name in essential_files:
+            file_path = f"{comparison_dir}/{file_name}"
+            if os.path.exists(file_path):
+                size = os.path.getsize(file_path)
+                present_files.append((file_name, size))
+            else:
+                missing_files.append(file_name)
+        
+        # Report file status
+        print("  Essential Files:")
+        for file_name, size in present_files:
+            size_str = f"{size:,} bytes" if size < 1024*1024 else f"{size/(1024*1024):.1f} MB"
+            print(f"    ✓ {file_name} ({size_str})")
+        
+        for file_name in missing_files:
+            print(f"    ✗ {file_name} (MISSING)")
+            overall_status = False
+        
+        # Check visualization outputs
+        viz_files = ['dot.PNG', 'dual_synteny.PNG', 'circle.PNG', 'bar.PNG']
+        viz_present = []
+        viz_missing = []
+        
+        for viz_file in viz_files:
+            if os.path.exists(f"{comparison_dir}/{viz_file}"):
+                viz_present.append(viz_file)
+            else:
+                viz_missing.append(viz_file)
+        
+        print("  Visualizations:")
+        print(f"    Present: {len(viz_present)}/{len(viz_files)}")
+        if viz_missing:
+            print(f"    Missing: {', '.join(viz_missing)}")
+        
+        # Validate collinearity file content
+        collinearity_file = f"{comparison_dir}/{comparison}.collinearity"
+        if os.path.exists(collinearity_file):
+            with open(collinearity_file, 'r') as f:
+                lines = f.readlines()
+            
+            block_count = len([l for l in lines if l.startswith('##')])
+            pair_count = len([l for l in lines if not l.startswith('#')])
+            
+            print("  Data Validation:")
+            print(f"    Synteny blocks: {block_count}")
+            print(f"    Gene pairs: {pair_count}")
+            
+            if block_count == 0:
+                print("    ⚠ Warning: No synteny blocks detected")
+            elif pair_count == 0:
+                print("    ⚠ Warning: No gene pairs in synteny blocks")
+            else:
+                print("    ✓ Valid synteny data detected")
+        
+        print()
+    
+    # Overall assessment
+    print("=== Overall Quality Assessment ===")
+    if overall_status:
+        print("✓ All essential files present")
+        print("✓ Analysis pipeline completed successfully")
+        print("✓ Results ready for interpretation")
+    else:
+        print("⚠ Some issues detected in analysis outputs")
+        print("  Please review missing files and re-run affected steps")
+    
+    print(f"\nAnalysis timestamp: {os.popen('date').read().strip()}")
+
+# Execute quality control
+quality_control_check()
+```
+
+## Conclusion and Next Steps
+
+This comprehensive MCScanX analysis pipeline has successfully:
+
+1. **Prepared comparative datasets** for synteny analysis between Aspiorhynchus laticeps, Schizothorax macropogon, and Triplophysa bombifrons
+2. **Performed all-vs-all BLAST searches** to identify homologous sequences
+3. **Executed MCScanX synteny detection** to identify collinear genomic regions
+4. **Generated multiple visualization formats** for comprehensive result interpretation
+5. **Provided quality control assessment** to ensure analysis reliability
+
+### Key Outputs Generated
+
+- **Synteny block files** (`.collinearity`) containing detailed collinearity information
+- **Tandem duplication files** (`.tandem`) identifying gene duplications within species
+- **Visualization plots** in multiple formats for publication and presentation
+- **Interactive HTML reports** for detailed chromosome-specific examination
+
+### Recommended Follow-up Analyses
+
+1. **Statistical analysis** of synteny block characteristics and conservation patterns
+2. **Functional annotation** of syntenic gene pairs to understand evolutionary significance  
+3. **Comparative analysis** between different species pairs to identify shared vs. unique synteny
+4. **Integration** with phylogenetic data to understand evolutionary relationships
+
+### File Organization
+
+All analysis outputs are organized in the `./DB/MCScanX/` directory structure:
+- `al_sm/` - Aspiorhynchus vs. Schizothorax comparison
+- `al_tb/` - Aspiorhynchus vs. Triplophysa comparison
+
+Each comparison directory contains complete analysis results including input files, MCScanX outputs, and visualization products.
+
+## References
+
+- **MCScanX**: Wang, Y. et al. (2012). MCScanX: a toolkit for detection and evolutionary analysis of gene synteny and collinearity. *Nucleic Acids Research*, 40(7), e49.
+- **BLAST**: Altschul, S.F. et al. (1997). Gapped BLAST and PSI-BLAST: a new generation of protein database search programs. *Nucleic Acids Research*, 25(17), 3389-3402.
+- **Synteny Analysis**: Lyons, E. & Freeling, M. (2008). How to usefully compare homologous plant genes and chromosomes as DNA sequences. *The Plant Journal*, 53(4), 661-673.

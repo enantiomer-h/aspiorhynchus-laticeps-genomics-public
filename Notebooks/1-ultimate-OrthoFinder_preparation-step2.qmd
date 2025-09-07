@@ -1,0 +1,843 @@
+---
+title: "Ultimate OrthoFinder Preparation - Step 2: File Preprocessing and Header Standardization"
+format: html
+jupyter:
+  kernelspec:
+    display_name: Python (Biopython)
+    language: python
+    name: env_biopython
+---
+
+# OrthoFinder Preparation - Step 2: File Preprocessing and Header Standardization
+
+This notebook addresses preprocessing steps required when genomic sequence files (FNA) and annotation files (GFF3) have inconsistent sequence identifiers. This is a critical step that must be completed before protein extraction to ensure proper matching between sequences and annotations.
+
+## Overview
+
+**Purpose**: Standardize sequence identifiers between FNA and GFF3 files to resolve mismatches that prevent successful protein extraction.
+
+**Common Issues**:
+- Case sensitivity differences (Chr vs chr)
+- Naming convention variations (chromosome vs scaffold vs ctg)
+- Complex header formats with additional metadata
+
+**Input Files**:
+- FNA files: Genomic sequences with potentially inconsistent headers
+- GFF3 files: Annotations that may not match FNA sequence identifiers
+
+**Output Files**:
+- Modified FNA files: Genomic sequences with standardized headers
+- FAA files: Protein sequences extracted using corrected files
+
+## Requirements and Setup
+
+```{python}
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+import gffutils
+import re
+import os
+import logging
+from pathlib import Path
+from multiprocessing import Pool
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+```
+
+## Core Functions for Header Standardization
+
+```{python}
+def analyze_headers(fasta_file, gff_file=None, max_headers=10):
+    """
+    Analyze FASTA headers and optionally compare with GFF sequence IDs.
+    
+    Parameters:
+    -----------
+    fasta_file : str
+        Path to FASTA file
+    gff_file : str, optional
+        Path to GFF file for comparison
+    max_headers : int
+        Maximum number of headers to display
+    
+    Returns:
+    --------
+    dict : Analysis results with header patterns and mismatches
+    """
+    
+    logger.info(f"Analyzing headers in: {os.path.basename(fasta_file)}")
+    
+    # Extract FASTA headers
+    fasta_headers = []
+    fasta_ids = set()
+    
+    try:
+        for i, record in enumerate(SeqIO.parse(fasta_file, "fasta")):
+            if i < max_headers:
+                fasta_headers.append(record.description)
+            fasta_ids.add(record.id)
+            
+    except Exception as e:
+        logger.error(f"Error reading FASTA file: {e}")
+        return {}
+    
+    results = {
+        'fasta_file': fasta_file,
+        'total_sequences': len(fasta_ids),
+        'sample_headers': fasta_headers,
+        'fasta_ids': fasta_ids
+    }
+    
+    # Analyze GFF if provided
+    if gff_file and os.path.exists(gff_file):
+        logger.info(f"Comparing with GFF file: {os.path.basename(gff_file)}")
+        
+        gff_ids = set()
+        try:
+            with open(gff_file, 'r') as f:
+                for line in f:
+                    if not line.startswith('#') and line.strip():
+                        seq_id = line.split('\t')[0]
+                        if seq_id:
+                            gff_ids.add(seq_id)
+        
+            results['gff_ids'] = gff_ids
+            results['common_ids'] = fasta_ids & gff_ids
+            results['fasta_only'] = fasta_ids - gff_ids
+            results['gff_only'] = gff_ids - fasta_ids
+            results['match_ratio'] = len(results['common_ids']) / max(len(fasta_ids), 1)
+            
+            logger.info(f"FASTA sequences: {len(fasta_ids)}")
+            logger.info(f"GFF sequences: {len(gff_ids)}")
+            logger.info(f"Matching IDs: {len(results['common_ids'])} ({results['match_ratio']:.1%})")
+            
+        except Exception as e:
+            logger.error(f"Error reading GFF file: {e}")
+    
+    return results
+
+def create_header_standardizer(pattern_type):
+    """
+    Factory function to create header standardization functions for different patterns.
+    
+    Parameters:
+    -----------
+    pattern_type : str
+        Type of standardization pattern to apply
+        
+    Returns:
+    --------
+    function : Header standardization function
+    """
+    
+    def diptychus_standardizer(header):
+        """Standardize Diptychus_maculatus headers: Chr -> chr"""
+        if header.startswith('>'):
+            return re.sub(r'>(Chr)(\d+)', r'>chr\2', header)
+        return header
+    
+    def triplophysa_standardizer(header):
+        """Standardize Triplophysa_bombifrons headers: chromosome/scaffold patterns"""
+        if header.startswith('>'):
+            # Match chromosome followed by number
+            match_chromosome = re.search(r'\bchromosome\s+(\d+)', header, re.IGNORECASE)
+            # Match scaffold followed by number  
+            match_scaffold = re.search(r'\bscaffold(\d+)', header, re.IGNORECASE)
+            
+            if match_chromosome:
+                return f">chr{match_chromosome.group(1)}\n"
+            elif match_scaffold:
+                return f">scaffold{match_scaffold.group(1)}\n"
+            else:
+                return header
+        return header
+    
+    def aspiorhynchus_standardizer(header):
+        """Standardize Aspiorhynchus_laticeps headers: ctg/chromosome patterns"""
+        if header.startswith('>'):
+            # Match ctg pattern
+            match_ctg = re.search(r'\b(ctg\d+(?:_\d+)*)', header, re.IGNORECASE)
+            # Match chromosome pattern
+            match_chromosome = re.search(r'\bchromosome\s+(\d+)', header, re.IGNORECASE)
+            
+            if match_ctg:
+                return f">{match_ctg.group(1)}\n"
+            elif match_chromosome:
+                return f">chr{match_chromosome.group(1)}\n"
+            else:
+                return header
+        return header
+    
+    def generic_standardizer(header):
+        """Generic header standardization for common patterns"""
+        if header.startswith('>'):
+            # Priority order: chromosome > scaffold > contig > ctg
+            patterns = [
+                (r'\bchromosome\s+(\d+)', r'>chr\1'),
+                (r'\bscaffold(\d+)', r'>scaffold\1'), 
+                (r'\bcontig(\d+)', r'>contig\1'),
+                (r'\b(ctg\d+(?:_\d+)*)', r'>\1')
+            ]
+            
+            for pattern, replacement in patterns:
+                match = re.search(pattern, header, re.IGNORECASE)
+                if match:
+                    if replacement.startswith(r'>'):
+                        return re.sub(pattern, replacement, header, flags=re.IGNORECASE) + '\n'
+                    else:
+                        return f">{match.group(1)}\n"
+            
+            # If no pattern matches, return original
+            return header
+        return header
+    
+    standardizers = {
+        'diptychus': diptychus_standardizer,
+        'triplophysa': triplophysa_standardizer, 
+        'aspiorhynchus': aspiorhynchus_standardizer,
+        'generic': generic_standardizer
+    }
+    
+    return standardizers.get(pattern_type, generic_standardizer)
+
+def standardize_fasta_headers(input_file, output_file, pattern_type='generic', dry_run=False):
+    """
+    Standardize FASTA headers according to specified pattern.
+    
+    Parameters:
+    -----------
+    input_file : str
+        Path to input FASTA file
+    output_file : str
+        Path to output FASTA file
+    pattern_type : str
+        Type of standardization pattern ('diptychus', 'triplophysa', 'aspiorhynchus', 'generic')
+    dry_run : bool
+        If True, only show what would be changed without writing output
+        
+    Returns:
+    --------
+    dict : Results summary with changes made
+    """
+    
+    logger.info(f"Standardizing headers using '{pattern_type}' pattern")
+    logger.info(f"Input: {input_file}")
+    
+    if not os.path.exists(input_file):
+        raise FileNotFoundError(f"Input file not found: {input_file}")
+    
+    # Get standardizer function
+    standardizer = create_header_standardizer(pattern_type)
+    
+    changes = []
+    total_sequences = 0
+    
+    try:
+        if dry_run:
+            logger.info("DRY RUN - No files will be modified")
+            
+        if not dry_run:
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            outfile = open(output_file, 'w')
+        
+        with open(input_file, 'r') as infile:
+            for line_num, line in enumerate(infile, 1):
+                if line.startswith('>'):
+                    total_sequences += 1
+                    original_header = line.strip()
+                    new_header = standardizer(line).strip()
+                    
+                    if original_header != new_header:
+                        changes.append({
+                            'line': line_num,
+                            'original': original_header,
+                            'new': new_header
+                        })
+                    
+                    if dry_run:
+                        if len(changes) <= 10:  # Show first 10 changes
+                            logger.info(f"Would change: {original_header} -> {new_header}")
+                    else:
+                        outfile.write(new_header + '\n')
+                else:
+                    if not dry_run:
+                        outfile.write(line)
+        
+        if not dry_run:
+            outfile.close()
+            logger.info(f"Output written to: {output_file}")
+        
+    except Exception as e:
+        if not dry_run and 'outfile' in locals():
+            outfile.close()
+        logger.error(f"Error processing file: {e}")
+        raise
+    
+    results = {
+        'total_sequences': total_sequences,
+        'changes_made': len(changes),
+        'change_ratio': len(changes) / max(total_sequences, 1),
+        'changes': changes[:10] if dry_run else []  # Limit changes in results
+    }
+    
+    logger.info(f"Processing complete: {len(changes)}/{total_sequences} headers modified")
+    
+    return results
+```
+
+## Enhanced Protein Extraction Function
+
+```{python}
+def extract_proteins_with_validation(fna_file, gff_file, faa_output, genetic_code=11, 
+                                   validate_headers=True, backup_original=True):
+    """
+    Extract proteins with header validation and backup options.
+    
+    Parameters:
+    -----------
+    fna_file : str
+        Path to genomic sequence file
+    gff_file : str
+        Path to GFF3 annotation file
+    faa_output : str
+        Path for output protein sequences
+    genetic_code : int
+        Genetic code for translation
+    validate_headers : bool
+        Whether to validate header matching before extraction
+    backup_original : bool
+        Whether to create backup of original files
+        
+    Returns:
+    --------
+    dict : Extraction results with statistics
+    """
+    
+    logger.info(f"Starting protein extraction with validation")
+    
+    # Validate header matching if requested
+    if validate_headers:
+        analysis = analyze_headers(fna_file, gff_file)
+        if 'match_ratio' in analysis and analysis['match_ratio'] < 0.8:
+            logger.warning(f"Low header match ratio: {analysis['match_ratio']:.1%}")
+            logger.warning("Consider running header standardization first")
+    
+    # Create backup if requested
+    if backup_original:
+        backup_fna = f"{fna_file}.backup"
+        if not os.path.exists(backup_fna):
+            import shutil
+            shutil.copy2(fna_file, backup_fna)
+            logger.info(f"Created backup: {backup_fna}")
+    
+    try:
+        # Parse the genomic sequence
+        logger.info("Parsing genomic sequences...")
+        genome = SeqIO.to_dict(SeqIO.parse(fna_file, "fasta"))
+        
+        if not genome:
+            raise ValueError(f"No sequences found in: {fna_file}")
+        
+        # Parse the GFF file
+        logger.info("Parsing GFF3 annotations...")
+        db = gffutils.create_db(gff_file, ":memory:", merge_strategy="merge", keep_order=True)
+        
+        # Extract proteins
+        proteins = []
+        processed_cds = 0
+        skipped_cds = 0
+        translation_errors = 0
+        
+        os.makedirs(os.path.dirname(faa_output), exist_ok=True)
+        
+        for feature in db.features_of_type("CDS", order_by="start"):
+            seq_id = feature.seqid
+            
+            if seq_id not in genome:
+                skipped_cds += 1
+                continue
+            
+            try:
+                seq = genome[seq_id].seq
+                
+                # Extract CDS sequence
+                cds_seq = seq[feature.start - 1 : feature.end]
+                if feature.strand == "-":
+                    cds_seq = cds_seq.reverse_complement()
+                
+                # Translate to protein
+                protein_seq = cds_seq.translate(table=genetic_code, to_stop=True)
+                
+                if len(protein_seq) == 0:
+                    continue
+                
+                # Create SeqRecord
+                description_parts = []
+                if hasattr(feature, 'attributes') and 'product' in feature.attributes:
+                    description_parts.append(feature.attributes['product'][0])
+                description_parts.append(f"{seq_id}:{feature.start}-{feature.end}({feature.strand})")
+                
+                protein_record = SeqRecord(
+                    protein_seq,
+                    id=feature.id if feature.id else f"CDS_{processed_cds}",
+                    description=" | ".join(description_parts)
+                )
+                proteins.append(protein_record)
+                processed_cds += 1
+                
+            except Exception as e:
+                translation_errors += 1
+                continue
+        
+        # Write output
+        if proteins:
+            SeqIO.write(proteins, faa_output, "fasta")
+            logger.info(f"Successfully extracted {len(proteins)} proteins")
+            logger.info(f"Output written to: {faa_output}")
+        else:
+            logger.error("No proteins were extracted!")
+        
+        results = {
+            'input_fna': fna_file,
+            'input_gff': gff_file,
+            'output_faa': faa_output,
+            'total_sequences': len(genome),
+            'processed_cds': processed_cds,
+            'skipped_cds': skipped_cds,
+            'translation_errors': translation_errors,
+            'proteins_extracted': len(proteins),
+            'success': len(proteins) > 0
+        }
+        
+        logger.info("Extraction Summary:")
+        logger.info(f"  Genomic sequences: {results['total_sequences']}")
+        logger.info(f"  CDS processed: {results['processed_cds']}")
+        logger.info(f"  CDS skipped: {results['skipped_cds']}")
+        logger.info(f"  Translation errors: {results['translation_errors']}")
+        logger.info(f"  Proteins extracted: {results['proteins_extracted']}")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Protein extraction failed: {e}")
+        raise
+```
+
+## Species-Specific Processing Functions
+
+```{python}
+def process_diptychus_maculatus(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+    """Process Diptychus_maculatus genome with header standardization."""
+    
+    species_name = "Diptychus_maculatus"
+    logger.info(f"Processing {species_name}")
+    
+    # File paths
+    input_fna = os.path.join(base_dir, species_name, "DM.fasta")
+    modified_fna = os.path.join(base_dir, species_name, "DM_modified.fasta") 
+    gff_file = os.path.join(base_dir, species_name, "DM_final.evm.gff3")
+    faa_output = os.path.join(output_dir, f"{species_name}.faa")
+    
+    # Check if files exist
+    if not all(os.path.exists(f) for f in [input_fna, gff_file]):
+        logger.warning(f"Input files not found for {species_name}")
+        return None
+    
+    # Analyze headers first
+    logger.info("Analyzing headers...")
+    analysis = analyze_headers(input_fna, gff_file)
+    
+    # Standardize headers if needed
+    if analysis.get('match_ratio', 0) < 0.9:
+        logger.info("Standardizing FASTA headers...")
+        standardize_fasta_headers(input_fna, modified_fna, pattern_type='diptychus')
+        fna_to_use = modified_fna
+    else:
+        logger.info("Headers already compatible")
+        fna_to_use = input_fna
+    
+    # Extract proteins
+    logger.info("Extracting proteins...")
+    results = extract_proteins_with_validation(fna_to_use, gff_file, faa_output)
+    
+    return results
+
+def process_triplophysa_bombifrons(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+    """Process Triplophysa_bombifrons genome with header standardization."""
+    
+    species_name = "Triplophysa_bombifrons"
+    logger.info(f"Processing {species_name}")
+    
+    # File paths
+    input_fna = os.path.join(base_dir, species_name, "ncbi_dataset/data/GCA_029783895.1/GCA_029783895.1_ASM2978389v1_genomic.fna")
+    modified_fna = os.path.join(base_dir, species_name, "ncbi_dataset/data/GCA_029783895.1/GCA_029783895.1_ASM2978389v1_genomic_modified.fna")
+    gff_file = os.path.join(base_dir, species_name, "Triplophysa_bombifrons-GFF.gff3")
+    faa_output = os.path.join(output_dir, f"{species_name}.faa")
+    
+    # Check if files exist
+    if not all(os.path.exists(f) for f in [input_fna, gff_file]):
+        logger.warning(f"Input files not found for {species_name}")
+        return None
+    
+    # Analyze headers first
+    logger.info("Analyzing headers...")
+    analysis = analyze_headers(input_fna, gff_file)
+    
+    # Standardize headers if needed
+    if analysis.get('match_ratio', 0) < 0.9:
+        logger.info("Standardizing FASTA headers...")
+        standardize_fasta_headers(input_fna, modified_fna, pattern_type='triplophysa')
+        fna_to_use = modified_fna
+    else:
+        logger.info("Headers already compatible")
+        fna_to_use = input_fna
+    
+    # Extract proteins
+    logger.info("Extracting proteins...")
+    results = extract_proteins_with_validation(fna_to_use, gff_file, faa_output)
+    
+    return results
+
+def process_aspiorhynchus_laticeps(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+    """Process Aspiorhynchus_laticeps genome with header standardization."""
+    
+    species_name = "Aspiorhynchus_laticeps"
+    logger.info(f"Processing {species_name}")
+    
+    # File paths
+    input_fna = os.path.join(base_dir, species_name, "ncbi_dataset/data/GCA_023376895.1/GCA_023376895.1_ASM2337689v1_genomic.fna")
+    modified_fna = os.path.join(base_dir, species_name, "ncbi_dataset/data/GCA_023376895.1/GCA_023376895.1_ASM2337689v1_genomic_modified.fna")
+    gff_file = os.path.join(base_dir, species_name, "AL.chromosome.gff3")
+    faa_output = os.path.join(base_dir, species_name, "Aspiorhynchus_laticeps_manaul.faa")
+    
+    # Check if pre-existing protein file is available
+    existing_faa = os.path.join(base_dir, species_name, "AL.protein.fa")
+    if os.path.exists(existing_faa):
+        logger.info(f"Using existing protein file: {existing_faa}")
+        import shutil
+        final_faa = os.path.join(base_dir, species_name, "Aspiorhynchus_laticeps.faa")
+        os.makedirs(output_dir, exist_ok=True)
+        shutil.copy2(existing_faa, final_faa)
+        
+        return {
+            'input_fna': 'existing_protein_file',
+            'output_faa': final_faa,
+            'proteins_extracted': len(list(SeqIO.parse(existing_faa, "fasta"))),
+            'success': True,
+            'method': 'copied_existing'
+        }
+    
+    # Check if files exist for manual processing
+    if not all(os.path.exists(f) for f in [input_fna, gff_file]):
+        logger.warning(f"Input files not found for {species_name}")
+        return None
+    
+    # Analyze headers first
+    logger.info("Analyzing headers...")
+    analysis = analyze_headers(input_fna, gff_file)
+    
+    # Standardize headers if needed
+    if analysis.get('match_ratio', 0) < 0.9:
+        logger.info("Standardizing FASTA headers...")
+        standardize_fasta_headers(input_fna, modified_fna, pattern_type='aspiorhynchus')
+        fna_to_use = modified_fna
+    else:
+        logger.info("Headers already compatible")
+        fna_to_use = input_fna
+    
+    # Extract proteins
+    logger.info("Extracting proteins...")
+    results = extract_proteins_with_validation(fna_to_use, gff_file, faa_output)
+    
+    return results
+```
+
+## Batch Processing and Quality Control
+
+```{python}
+def process_problematic_genomes(species_list=None, base_dir="./DB/GENOME_Comparison", 
+                              output_dir="./DB/GENOME_Comparison/FAA"):
+    """
+    Process genomes that require header standardization.
+    
+    Parameters:
+    -----------
+    species_list : list, optional
+        List of species to process. If None, processes all known problematic species
+    base_dir : str
+        Base directory containing genome data
+    output_dir : str
+        Output directory for FAA files
+        
+    Returns:
+    --------
+    dict : Processing results for each species
+    """
+    
+    if species_list is None:
+        species_list = ['Diptychus_maculatus', 'Triplophysa_bombifrons', 'Aspiorhynchus_laticeps']
+    
+    # Processing functions mapping
+    processors = {
+        'Diptychus_maculatus': process_diptychus_maculatus,
+        'Triplophysa_bombifrons': process_triplophysa_bombifrons,
+        'Aspiorhynchus_laticeps': process_aspiorhynchus_laticeps
+    }
+    
+    results = {}
+    successful = 0
+    
+    logger.info(f"Starting batch processing of {len(species_list)} species")
+    
+    for species in species_list:
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Processing: {species}")
+        logger.info(f"{'='*50}")
+        
+        try:
+            if species in processors:
+                result = processors[species](base_dir, output_dir)
+                results[species] = result
+                if result and result.get('success', False):
+                    successful += 1
+                    logger.info(f"✓ {species} processed successfully")
+                else:
+                    logger.error(f"✗ {species} processing failed")
+            else:
+                logger.warning(f"No specific processor for {species}, using generic method")
+                results[species] = {'success': False, 'error': 'No processor available'}
+                
+        except Exception as e:
+            logger.error(f"Error processing {species}: {e}")
+            results[species] = {'success': False, 'error': str(e)}
+    
+    # Summary
+    logger.info(f"\n{'='*50}")
+    logger.info("BATCH PROCESSING SUMMARY")
+    logger.info(f"{'='*50}")
+    logger.info(f"Species processed: {len(species_list)}")
+    logger.info(f"Successful: {successful}")
+    logger.info(f"Failed: {len(species_list) - successful}")
+    
+    return results
+
+def validate_processed_files(output_dir="./DB/GENOME_Comparison/FAA", min_proteins=100):
+    """Validate all processed FAA files."""
+    
+    logger.info(f"Validating processed files in: {output_dir}")
+    
+    if not os.path.exists(output_dir):
+        logger.error(f"Output directory not found: {output_dir}")
+        return {}
+    
+    results = {
+        'valid_files': [],
+        'problematic_files': [],
+        'total_proteins': 0
+    }
+    
+    faa_files = [f for f in os.listdir(output_dir) if f.endswith('.faa')]
+    
+    for faa_file in faa_files:
+        faa_path = os.path.join(output_dir, faa_file)
+        
+        try:
+            sequences = list(SeqIO.parse(faa_path, "fasta"))
+            protein_count = len(sequences)
+            results['total_proteins'] += protein_count
+            
+            if protein_count >= min_proteins:
+                results['valid_files'].append((faa_file, protein_count))
+                logger.info(f"✓ {faa_file}: {protein_count} proteins")
+            else:
+                results['problematic_files'].append((faa_file, protein_count, 'too_few_proteins'))
+                logger.warning(f"⚠ {faa_file}: only {protein_count} proteins")
+                
+        except Exception as e:
+            results['problematic_files'].append((faa_file, 0, f'read_error: {e}'))
+            logger.error(f"✗ {faa_file}: read error")
+    
+    logger.info(f"\nValidation Summary:")
+    logger.info(f"Valid files: {len(results['valid_files'])}")
+    logger.info(f"Problematic files: {len(results['problematic_files'])}")
+    logger.info(f"Total proteins: {results['total_proteins']}")
+    
+    return results
+```
+
+## Example Usage
+
+### Individual Species Processing
+
+```{python}
+# Process individual species with header standardization
+
+# Example 1: Diptychus_maculatus (Chr -> chr conversion)
+logger.info("Processing Diptychus_maculatus...")
+dm_result = process_diptychus_maculatus()
+
+# Example 2: Triplophysa_bombifrons (chromosome/scaffold standardization)  
+logger.info("Processing Triplophysa_bombifrons...")
+tb_result = process_triplophysa_bombifrons()
+
+# Example 3: Aspiorhynchus_laticeps (ctg/chromosome handling or use existing FAA)
+logger.info("Processing Aspiorhynchus_laticeps...")
+al_result = process_aspiorhynchus_laticeps()
+```
+
+### Batch Processing
+
+```{python}
+# Process all problematic species in batch
+batch_results = process_problematic_genomes()
+
+# Display results summary
+for species, result in batch_results.items():
+    if result and result.get('success'):
+        proteins = result.get('proteins_extracted', 'unknown')
+        method = result.get('method', 'extracted')
+        print(f"✓ {species}: {proteins} proteins ({method})")
+    else:
+        error = result.get('error', 'unknown error') if result else 'no result'
+        print(f"✗ {species}: {error}")
+```
+
+### Header Analysis for Custom Genomes
+
+```{python}
+# Analyze headers for a custom genome to determine needed preprocessing
+def analyze_custom_genome(fna_file, gff_file, species_name):
+    """Analyze a custom genome and suggest preprocessing steps."""
+    
+    logger.info(f"Analyzing {species_name}...")
+    
+    # Analyze headers
+    analysis = analyze_headers(fna_file, gff_file, max_headers=5)
+    
+    print(f"\nAnalysis for {species_name}:")
+    print(f"FASTA sequences: {analysis['total_sequences']}")
+    print(f"Sample headers:")
+    for i, header in enumerate(analysis['sample_headers']):
+        print(f"  {i+1}: {header}")
+    
+    if 'match_ratio' in analysis:
+        print(f"\nHeader matching:")
+        print(f"Match ratio: {analysis['match_ratio']:.1%}")
+        print(f"Common IDs: {len(analysis['common_ids'])}")
+        print(f"FASTA-only: {len(analysis['fasta_only'])}")
+        print(f"GFF-only: {len(analysis['gff_only'])}")
+        
+        if analysis['match_ratio'] < 0.8:
+            print("\n⚠ Recommendation: Header standardization needed")
+            print("Suggested pattern types to try:")
+            print("- 'generic': for common chromosome/scaffold/contig patterns")
+            print("- 'diptychus': for Chr -> chr conversion") 
+            print("- 'triplophysa': for chromosome/scaffold standardization")
+            print("- 'aspiorhynchus': for ctg/chromosome patterns")
+        else:
+            print("\n✓ Recommendation: Headers appear compatible")
+    
+    return analysis
+
+# Example usage for custom genome
+# analysis = analyze_custom_genome(
+#     "path/to/your/genome.fna",
+#     "path/to/your/annotation.gff3", 
+#     "Your_Species_Name"
+# )
+```
+
+### Quality Control and Validation
+
+```{python}
+# Validate all processed files
+validation_results = validate_processed_files()
+
+# Check for any issues
+if validation_results['problematic_files']:
+    print("\nProblematic files found:")
+    for filename, count, issue in validation_results['problematic_files']:
+        print(f"  {filename}: {issue} (count: {count})")
+        
+    print("\nRecommendations:")
+    print("1. Check input file quality")
+    print("2. Verify GFF3 format and CDS annotations")
+    print("3. Consider adjusting genetic code if needed")
+    print("4. Review header standardization results")
+```
+
+## Troubleshooting Guide
+
+### Common Header Mismatch Patterns
+
+```python
+# Common patterns and their solutions:
+
+header_patterns = {
+    "Chr1 vs chr1": {
+        "issue": "Case sensitivity difference",
+        "solution": "Use 'diptychus' pattern type",
+        "regex": r'>(Chr)(\d+)' + " -> " + r'>chr\2'
+    },
+    "chromosome 1 vs scaffold1": {
+        "issue": "Different naming conventions",
+        "solution": "Use 'triplophysa' pattern type", 
+        "regex": r'\bchromosome\s+(\d+)' + " -> " + r'>chr\1'
+    },
+    "ctg123 vs chromosome": {
+        "issue": "Assembly vs annotation convention mismatch",
+        "solution": "Use 'aspiorhynchus' pattern type",
+        "regex": r'\b(ctg\d+(?:_\d+)*)' + " -> " + r'>\1'
+    },
+    "Complex headers": {
+        "issue": "Headers contain metadata",
+        "solution": "Use 'generic' pattern or create custom",
+        "regex": "Extract key identifier from complex string"
+    }
+}
+
+for pattern, info in header_patterns.items():
+    print(f"{pattern}:")
+    print(f"  Issue: {info['issue']}")
+    print(f"  Solution: {info['solution']}")
+    print(f"  Regex: {info['regex']}")
+    print()
+```
+
+## Output Organization
+
+```
+DB/GENOME_Comparison/FAA/
+├── Diptychus_maculatus.faa          # Processed with header standardization
+├── Triplophysa_bombifrons.faa       # Processed with header standardization  
+└── [other_species].faa              # Additional species as needed
+
+DB/GENOME_Comparison/Aspiorhynchus_laticeps/
+├── Aspiorhynchus_laticeps.faa       # Copied from existing AL.protein.fa
+└── Aspiorhynchus_laticeps_manaul.faa # Or manually extracted if needed
+```
+
+## Next Steps
+
+After completing Step 2 preprocessing:
+
+1. **Run OrthoFinder** on the complete set of standardized protein sequences
+2. **Proceed to downstream analysis** with confidence in data consistency
+
+## Notes
+
+- Always backup original files before modification
+- Test header standardization with dry_run=True first
+- Different species may require different standardization patterns
+- Consider existing protein files before attempting extraction
+- Validate output thoroughly before proceeding to OrthoFinder
+
+## References
+
+- OrthoFinder: https://github.com/davidemms/OrthoFinder
+- BioPython: https://biopython.org/
+- gffutils: https://daler.github.io/gffutils/
+- GFF3 Format Specification: https://github.com/The-Sequence-Ontology/Specifications/blob/master/gff3.md

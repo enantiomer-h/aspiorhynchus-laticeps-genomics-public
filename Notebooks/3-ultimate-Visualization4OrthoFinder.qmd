@@ -1,0 +1,3058 @@
+---
+title: Ultimate OrthoFinder Visualization Analysis
+subtitle: Comprehensive visualization suite for comparative genomics results
+jupyter:
+  kernelspec:
+    display_name: Python (Biopython)
+    language: python
+    name: env_biopython
+---
+
+## Project Overview
+
+This notebook provides a comprehensive visualization suite for OrthoFinder comparative genomics results, including phylogenetic trees, orthogroup analysis, heatmaps, statistical plots, and advanced set visualizations. The analysis integrates multiple visualization approaches developed across different analysis phases.
+
+### Data Sources
+- **OrthoFinder Results**: `./Outputs/OrthoFinder/Results_Apr25/`
+- **Processed Tables**: `./Notebooks/Tables/`
+- **Output Figures**: `./Notebooks/Figures/`
+
+## Environment Setup (env_biopython)
+
+```{python}
+!which python3
+!mamba env list
+!jupyter kernelspec list
+from IPython.display import Image, display
+```
+
+### Available Kernels
+```txt
+Available kernels:
+  env_biopython                  /home/jovyan/.local/share/jupyter/kernels/env_biopython
+  ir                             /opt/conda/share/jupyter/kernels/ir
+  julia-1.7                      /opt/conda/share/jupyter/kernels/julia-1.7
+  python3                        /opt/conda/share/jupyter/kernels/python3
+  ir_clusterprofiler_4100_env    /usr/local/share/jupyter/kernels/ir_clusterprofiler_4100_env
+  ir_clusterprofiler_481_env     /usr/local/share/jupyter/kernels/ir_clusterprofiler_481_env
+```
+
+## 1. Species Tree Visualization
+
+### 1.1 Species Tree Plotting Function
+
+```{python}
+from Bio import Phylo
+import matplotlib.pyplot as plt
+from io import StringIO
+
+def plot_phylogenetic_tree_with_lengths(
+    newick_file_path, 
+    figsize=(14, 10), 
+    branch_label_precision=3,
+    title=None,
+    title_fontsize=16,
+    label_fontsize=12,
+    branch_label_fontsize=9,
+    branch_color='#2E4057',
+    label_color='#1A1A1A',
+    background_color='white',
+    show_branch_labels=True,
+    show_scale_bar=True,
+    orientation='horizontal',
+    save_path=None,
+    dpi=300,
+    publication_ready=True
+):
+    """
+    Creates a publication-quality phylogenetic tree plot with enhanced styling and customization options.
+
+    Parameters:
+    - newick_file_path: str, path to the Newick file containing the tree
+    - figsize: tuple(int, int), figure size in inches (default: (14, 10))
+    - branch_label_precision: int, decimal places for branch lengths (default: 3)
+    - title: str, optional, plot title (auto-generated if None)
+    - title_fontsize: int, title font size (default: 16)
+    - label_fontsize: int, species label font size (default: 12)
+    - branch_label_fontsize: int, branch length label font size (default: 9)
+    - branch_color: str, color for branches (default: '#2E4057')
+    - label_color: str, color for labels (default: '#1A1A1A')
+    - background_color: str, background color (default: 'white')
+    - show_branch_labels: bool, whether to show branch length labels (default: True)
+    - show_scale_bar: bool, whether to show scale bar (default: True)
+    - orientation: str, 'horizontal' or 'vertical' tree orientation (default: 'horizontal')
+    - save_path: str, optional, base path to save the figure (saves as PNG and PDF)
+    - dpi: int, resolution for saved figures (default: 300)
+    - publication_ready: bool, apply publication-ready styling (default: True)
+
+    Returns:
+    - matplotlib.figure.Figure: the created figure object
+    """
+    import matplotlib.patches as mpatches
+    from matplotlib.patches import Rectangle
+    import numpy as np
+    
+    # Load the tree from the Newick file
+    try:
+        tree = Phylo.read(newick_file_path, "newick")
+    except Exception as e:
+        raise ValueError(f"Error reading tree file {newick_file_path}: {str(e)}")
+    
+    # Set publication-ready style
+    if publication_ready:
+        plt.style.use('default')
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+            'font.size': label_fontsize,
+            'axes.linewidth': 1.2,
+            'axes.spines.top': False,
+            'axes.spines.right': False,
+            'axes.spines.bottom': True,
+            'axes.spines.left': True,
+            'xtick.major.width': 1.2,
+            'ytick.major.width': 1.2,
+            'figure.facecolor': background_color,
+            'axes.facecolor': background_color
+        })
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(1, 1, figsize=figsize, facecolor=background_color)
+    ax.set_facecolor(background_color)
+    
+    # Configure branch labels
+    branch_label_func = None
+    if show_branch_labels:
+        branch_label_func = lambda c: f'{c.branch_length:.{branch_label_precision}f}' if c.branch_length else ''
+    
+    # Draw the tree
+    Phylo.draw(
+        tree, 
+        axes=ax, 
+        do_show=False,
+        branch_labels=branch_label_func,
+        label_func=lambda x: x.name if x.name else ''
+    )
+    
+    # Customize appearance
+    for line in ax.get_lines():
+        line.set_color(branch_color)
+        line.set_linewidth(2.0)
+    
+    # Customize label and branch label colors and fonts
+    for text in ax.texts:
+        # Check if it's a branch label (contains numbers/decimals)
+        text_content = text.get_text().strip()
+        if text_content and any(c.isdigit() or c == '.' for c in text_content):
+            # This is likely a branch length label
+            text.set_color('#666666')
+            text.set_fontsize(branch_label_fontsize)
+        else:
+            # This is likely a species/node label
+            text.set_color(label_color)
+            text.set_fontsize(label_fontsize)
+    
+    # Set axis properties
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(True)
+    ax.spines['left'].set_visible(False)
+    
+    # Handle orientation
+    if orientation == 'vertical':
+        ax.invert_yaxis()
+        plt.setp(ax.get_xticklabels(), rotation=90, ha='center')
+    
+    # Add scale bar
+    if show_scale_bar:
+        # Calculate appropriate scale bar length
+        xlim = ax.get_xlim()
+        x_range = xlim[1] - xlim[0]
+        scale_length = round(x_range * 0.1, branch_label_precision)
+        
+        # Position scale bar
+        scale_x = xlim[0] + x_range * 0.05
+        ylim = ax.get_ylim()
+        scale_y = ylim[0] + (ylim[1] - ylim[0]) * 0.05
+        
+        # Draw scale bar
+        ax.plot([scale_x, scale_x + scale_length], [scale_y, scale_y], 
+                color=branch_color, linewidth=3)
+        ax.text(scale_x + scale_length/2, scale_y - (ylim[1] - ylim[0]) * 0.02, 
+                f'{scale_length}', ha='center', va='top', 
+                fontsize=branch_label_fontsize, color=label_color)
+    
+    # Set title
+    if title is None:
+        # Auto-generate title based on file name
+        import os
+        filename = os.path.basename(newick_file_path)
+        if 'rooted' in filename.lower():
+            title = 'Species Phylogenetic Tree (Rooted)'
+        elif 'gene' in filename.lower() and 'duplication' in filename.lower():
+            title = 'Species Tree with Gene Duplication Events'
+        elif 'species' in filename.lower():
+            title = 'Species Phylogenetic Tree'
+        else:
+            title = 'Phylogenetic Tree'
+    
+    if title:
+        ax.set_title(title, fontsize=title_fontsize, fontweight='bold', 
+                    color=label_color, pad=20)
+    
+    # Add subtle grid if publication ready
+    if publication_ready:
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+    
+    # Adjust layout and spacing
+    plt.tight_layout()
+    
+    # Add frame around the plot for publication
+    if publication_ready:
+        for spine in ax.spines.values():
+            spine.set_edgecolor(label_color)
+            spine.set_alpha(0.8)
+    
+    # Save the plot with high quality settings
+    if save_path:
+        # Save PNG with high DPI
+        plt.savefig(f"{save_path}.png", dpi=dpi, bbox_inches='tight', 
+                   facecolor=background_color, edgecolor='none', 
+                   transparent=False, format='png')
+        
+        # Save PDF for vector graphics
+        plt.savefig(f"{save_path}.pdf", bbox_inches='tight', 
+                   facecolor=background_color, edgecolor='none', 
+                   transparent=False, format='pdf')
+        
+        print(f"Publication-quality tree saved as {save_path}.png and {save_path}.pdf")
+    
+    # Display the plot
+    plt.show()
+    
+    return fig
+```
+
+### 1.2 Species Tree Visualizations
+
+#### Rooted Species Tree
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt)
+
+```{python}
+# Publication-ready rooted species tree with enhanced styling
+plot_phylogenetic_tree_with_lengths(
+    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    figsize=(16, 12),
+    branch_label_precision=4,
+    title="Species Phylogenetic Tree (Rooted)",
+    title_fontsize=18,
+    label_fontsize=14,
+    branch_label_fontsize=10,
+    branch_color='#2E4057',
+    label_color='#1A1A1A',
+    show_scale_bar=True,
+    save_path="./Notebooks/Figures/SpeciesTree_rooted",
+    dpi=300,
+    publication_ready=True
+)
+```
+
+#### Species Tree with Node Labels
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt)
+
+```{python}
+# Publication-ready species tree with node labels
+plot_phylogenetic_tree_with_lengths(
+    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt",
+    figsize=(16, 12),
+    branch_label_precision=3,
+    title="Species Phylogenetic Tree with Node Labels",
+    title_fontsize=18,
+    label_fontsize=14,
+    branch_label_fontsize=10,
+    branch_color='#2E4057',
+    label_color='#1A1A1A',
+    show_scale_bar=True,
+    save_path="./Notebooks/Figures/SpeciesTree_rooted_node_labels",
+    dpi=300,
+    publication_ready=True
+)
+```
+
+#### Gene Duplications Tree
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt)
+
+```{python}
+# Publication-ready gene duplication tree with enhanced visualization
+plot_phylogenetic_tree_with_lengths(
+    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt",
+    figsize=(16, 12),
+    branch_label_precision=3,
+    title="Species Tree with Gene Duplication Events (≥50% Support)",
+    title_fontsize=18,
+    label_fontsize=14,
+    branch_label_fontsize=10,
+    branch_color='#8B4513',  # Brown color to distinguish duplication events
+    label_color='#1A1A1A',
+    show_scale_bar=True,
+    save_path="./Notebooks/Figures/SpeciesTree_Gene_Duplications_0.5_Support",
+    dpi=300,
+    publication_ready=True
+)
+```
+
+## 1.5. Advanced Species Tree Visualization with R ggtree
+
+### 1.5.1 R ggtree Functions for Colorful Phylogenetic Trees
+
+```{r}
+# Load required libraries
+library(ggtree)
+library(ape)
+library(dplyr)
+library(RColorBrewer)
+library(viridis)
+library(ggplot2)
+library(treeio)
+library(phytools)
+
+# Function to assign colors to clades based on clustering
+assign_clade_colors <- function(tree, n_clusters = 5, color_palette = "Set1", method = "height") {
+    # Automatically assign colors to tree clades based on clustering algorithms.
+    # 
+    # Parameters:
+    # - tree: phylo object, the phylogenetic tree
+    # - n_clusters: int, number of color clusters to create (default: 5)
+    # - color_palette: str, color palette name ('Set1', 'Set2', 'viridis', 'plasma', 'inferno')
+    # - method: str, clustering method ('height', 'depth', 'support')
+    # 
+    # Returns:
+    # - list: color assignment for each clade/tip
+    
+    # Get tree information
+    n_tips <- length(tree$tip.label)
+    n_nodes <- tree$Nnode
+    
+    # Generate color palette
+    if (color_palette %in% c("viridis", "plasma", "inferno", "magma", "cividis")) {
+        # Use appropriate viridis function based on palette name
+        if (color_palette == "viridis") {
+            colors <- viridis::viridis(n = n_clusters)
+        } else if (color_palette == "plasma") {
+            colors <- viridis::plasma(n = n_clusters)
+        } else if (color_palette == "inferno") {
+            colors <- viridis::inferno(n = n_clusters)
+        } else if (color_palette == "magma") {
+            colors <- viridis::magma(n = n_clusters)
+        } else if (color_palette == "cividis") {
+            colors <- viridis::cividis(n = n_clusters)
+        }
+    } else if (color_palette %in% c("Set1", "Set2", "Set3", "Dark2", "Paired")) {
+        colors <- RColorBrewer::brewer.pal(min(n_clusters, 8), color_palette)
+        if (n_clusters > 8) {
+            # Extend palette if needed
+            colors <- colorRampPalette(colors)(n_clusters)
+        }
+    } else {
+        # Custom palette
+        colors <- rainbow(n_clusters)
+    }
+    
+    # Cluster assignment based on method
+    if (method == "height") {
+        # Cluster based on node heights
+        node_heights <- node.depth.edgelength(tree)
+        height_threshold <- quantile(node_heights, probs = seq(0, 1, length.out = n_clusters + 1))
+        
+        tip_colors <- rep(colors[1], n_tips)
+        for (i in 1:n_tips) {
+            tip_height <- node_heights[i]
+            cluster_idx <- findInterval(tip_height, height_threshold, rightmost.closed = TRUE)
+            cluster_idx <- max(1, min(cluster_idx, n_clusters))
+            tip_colors[i] <- colors[cluster_idx]
+        }
+    } else if (method == "depth") {
+        # Cluster based on tree depth (distance from root)
+        distances <- cophenetic(tree)
+        # Use hierarchical clustering on distances
+        hclust_result <- hclust(as.dist(distances))
+        clusters <- cutree(hclust_result, k = n_clusters)
+        tip_colors <- colors[clusters]
+    } else {
+        # Default: simple alternating colors
+        tip_colors <- rep_len(colors, n_tips)
+    }
+    
+    names(tip_colors) <- tree$tip.label
+    return(tip_colors)
+}
+
+# Function to create publication-quality ggtree plot
+plot_phylogenetic_tree_ggtree <- function(
+    newick_file_path,
+    # Layout and structure options
+    layout = "rectangular",  # rectangular, circular, fan, radial, unrooted
+    branch_length = TRUE,
+    ladderize = TRUE,
+    
+    # Coloring and styling options
+    color_scheme = "clade_auto",  # clade_auto, clade_manual, branch_length, uniform, gradient
+    color_palette = "Set1",
+    n_clusters = 5,
+    clade_method = "depth",  # height, depth, support
+    
+    # Branch and tip styling
+    branch_color = "#2E4057",
+    branch_size = 1.2,
+    tip_size = 4,
+    tip_shape = 16,
+    
+    # Label options
+    show_tip_labels = TRUE,
+    tip_label_size = 12,
+    tip_label_color = "#1A1A1A",
+    tip_label_offset = 0.1,
+    tip_label_angle = 0,
+    
+    # Branch length and support options
+    show_branch_length = FALSE,
+    branch_length_size = 8,
+    branch_length_color = "#666666",
+    branch_length_digits = 3,
+    show_node_support = FALSE,
+    node_support_size = 8,
+    
+    # Scale and axes
+    show_scale_bar = TRUE,
+    scale_bar_position = "bottomleft",
+    show_axis = FALSE,
+    
+    # Title and theme options
+    title = NULL,
+    title_size = 16,
+    plot_width = 14,
+    plot_height = 10,
+    
+    # Publication options
+    theme_style = "publication",  # publication, minimal, classic, modern
+    background_color = "white",
+    dpi = 300,
+    output_formats = c("png", "pdf"), # output_formats = c("png", "pdf", "svg"),
+    save_path = NULL,
+    
+    # Advanced visualization options
+    highlight_clades = NULL,  # vector of clade names to highlight
+    highlight_color = "#FF6B6B",
+    add_heatmap = FALSE,
+    heatmap_data = NULL,
+    add_barplot = FALSE,
+    barplot_data = NULL,
+    add_node_labels = FALSE,
+    node_label_size = 8
+) {
+    # Create publication-quality phylogenetic trees with advanced colorful clustering using ggtree.
+    # 
+    # This function provides comprehensive customization options for phylogenetic tree visualization,
+    # including automatic clade coloring, publication-ready themes, and multiple output formats.
+    # 
+    # Parameters:
+    # - newick_file_path: str, path to the Newick format tree file
+    # - layout: str, tree layout type (rectangular, circular, fan, radial, unrooted)
+    # - branch_length: logical, whether to use branch lengths for plotting
+    # - ladderize: logical, whether to ladderize the tree for better visualization
+    # - color_scheme: str, coloring strategy for the tree
+    # - color_palette: str, color palette for automatic coloring
+    # - n_clusters: int, number of color clusters for clade coloring
+    # - save_path: str, optional base path to save the figure (without extension)
+    # 
+    # Returns:
+    # - ggtree object: the created tree plot
+    
+    # Load the tree
+    tryCatch({
+        tree <- read.tree(newick_file_path)
+    }, error = function(e) {
+        stop(paste("Error reading tree file", newick_file_path, ":", e$message))
+    })
+    
+    # Ladderize tree for better visualization
+    if (ladderize) {
+        tree <- ladderize(tree)
+    }
+    
+    # Create base ggtree plot
+    p <- ggtree(tree, layout = layout, branch.length = if(branch_length) "branch.length" else "none")
+    
+    # Apply coloring scheme
+    if (color_scheme == "clade_auto") {
+        # Automatic clade coloring
+        tip_colors <- assign_clade_colors(tree, n_clusters, color_palette, clade_method)
+        
+        # Create a data frame for tip colors
+        tip_data <- data.frame(
+            label = names(tip_colors),
+            color = tip_colors,
+            stringsAsFactors = FALSE
+        )
+        
+        # Add tip colors to the plot
+        p <- p %<+% tip_data +
+            geom_tippoint(aes(color = color), size = tip_size, shape = tip_shape) +
+            scale_color_identity()
+        
+        # Color branches by clade if requested
+        if (color_scheme == "clade_auto") {
+            # Create grouping for branches
+            p <- p + geom_tree(aes(color = I(branch_color)), size = branch_size)
+        }
+    } else if (color_scheme == "gradient") {
+        # Gradient coloring based on branch lengths or node depth
+        p <- p + geom_tree(aes(color = branch.length), size = branch_size) +
+            scale_color_viridis_c(option = "plasma", name = "Branch Length")
+    } else if (color_scheme == "uniform") {
+        # Uniform coloring
+        p <- p + geom_tree(color = branch_color, size = branch_size) +
+            geom_tippoint(color = branch_color, size = tip_size, shape = tip_shape)
+    } else if (color_scheme == "branch_length") {
+        # Color by branch length
+        p <- p + geom_tree(aes(color = branch.length), size = branch_size) +
+            scale_color_viridis_c(name = "Branch Length") +
+            geom_tippoint(color = "#333333", size = tip_size, shape = tip_shape)
+    }
+    
+    # Add tip labels if requested
+    if (show_tip_labels) {
+        p <- p + geom_tiplab(
+            size = tip_label_size / 3.5,  # Convert from points to ggplot units
+            color = tip_label_color,
+            offset = tip_label_offset,
+            angle = tip_label_angle,
+            hjust = if(tip_label_angle == 0) 0 else 0.5
+        )
+    }
+    
+    # Add branch lengths if requested
+    if (show_branch_length) {
+        p <- p + geom_text2(
+            aes(label = sprintf(paste0("%.", branch_length_digits, "f"), branch.length),
+                subset = branch.length > 0),
+            size = branch_length_size / 3.5,
+            color = branch_length_color,
+            nudge_x = 0.01,
+            nudge_y = 0.01
+        )
+    }
+    
+    # Add node support values if requested
+    if (show_node_support && !is.null(tree$node.label)) {
+        p <- p + geom_nodelab(
+            size = node_support_size / 3.5,
+            color = branch_length_color,
+            nudge_x = -0.02,
+            nudge_y = 0.02
+        )
+    }
+    
+    # Add scale bar
+    if (show_scale_bar && branch_length) {
+        # Calculate scale bar length (10% of tree width)
+        tree_width <- max(node.depth.edgelength(tree))
+        scale_length <- tree_width * 0.1
+        
+        p <- p + geom_treescale(
+            x = if(scale_bar_position %in% c("bottomleft", "topleft")) 0 else tree_width * 0.8,
+            y = if(scale_bar_position %in% c("bottomleft", "bottomright")) 1 else length(tree$tip.label),
+            width = scale_length,
+            color = branch_color,
+            fontsize = 3
+        )
+    }
+    
+    # Highlight specific clades if requested
+    if (!is.null(highlight_clades)) {
+        for (clade_name in highlight_clades) {
+            if (clade_name %in% tree$tip.label) {
+                clade_node <- which(tree$tip.label == clade_name)
+                p <- p + geom_highlight(node = clade_node, fill = highlight_color, alpha = 0.3)
+            }
+        }
+    }
+    
+    # Add title
+    if (is.null(title)) {
+        # Auto-generate title based on filename
+        filename <- basename(newick_file_path)
+        if (grepl("rooted", filename, ignore.case = TRUE)) {
+            title <- "Species Phylogenetic Tree (Rooted) - ggtree"
+        } else if (grepl("gene.*duplication", filename, ignore.case = TRUE)) {
+            title <- "Species Tree with Gene Duplication Events - ggtree"
+        } else if (grepl("species", filename, ignore.case = TRUE)) {
+            title <- "Species Phylogenetic Tree - ggtree"
+        } else {
+            title <- "Phylogenetic Tree - ggtree"
+        }
+    }
+    
+    # Apply theme
+    if (theme_style == "publication") {
+        p <- p + theme_tree2() +
+            theme(
+                plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, family = "serif"),
+                plot.background = element_rect(fill = background_color, color = NA),
+                panel.background = element_rect(fill = background_color, color = NA),
+                legend.background = element_rect(fill = background_color, color = NA),
+                text = element_text(family = "serif"),
+                axis.title = element_text(size = 12),
+                axis.text = element_text(size = 10)
+            ) +
+            labs(title = title)
+    } else if (theme_style == "minimal") {
+        p <- p + theme_tree() +
+            theme_minimal() +
+            theme(
+                plot.title = element_text(size = title_size, face = "bold", hjust = 0.5),
+                plot.background = element_rect(fill = background_color, color = NA)
+            ) +
+            labs(title = title)
+    } else {
+        p <- p + theme_tree() +
+            labs(title = title)
+    }
+    
+    # Remove axes if not requested
+    if (!show_axis) {
+        p <- p + theme(
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            axis.line = element_blank()
+        )
+    }
+    
+    # Save the plot if requested
+    if (!is.null(save_path)) {
+        for (format in output_formats) {
+            filename <- paste0(save_path, "_ggtree.", format)
+            
+            ggsave(
+                filename = filename,
+                plot = p,
+                width = plot_width,
+                height = plot_height,
+                dpi = dpi,
+                device = format,
+                units = "in",
+                bg = background_color
+            )
+            
+            cat("Saved:", filename, "\\n")
+        }
+    }
+    
+    return(p)
+}
+
+# Function to create circular tree with enhanced clade coloring
+plot_circular_tree_ggtree <- function(newick_file_path, tip_label_angle = 0, tip_label_offset = 0.02, ...) {
+    # Create a circular phylogenetic tree with advanced clade coloring.
+    plot_phylogenetic_tree_ggtree(
+        newick_file_path = newick_file_path,
+        layout = "circular",
+        tip_label_angle = tip_label_angle,
+        tip_label_offset = tip_label_offset,
+        ...
+    )
+}
+
+# Function to create fan tree with gradient coloring
+plot_fan_tree_ggtree <- function(newick_file_path, color_scheme = "gradient", ...) {
+    # Create a fan-shaped phylogenetic tree with gradient branch coloring.
+    plot_phylogenetic_tree_ggtree(
+        newick_file_path = newick_file_path,
+        layout = "fan",
+        color_scheme = color_scheme,
+        ...
+    )
+}
+
+# Function to create comparison plots with multiple color schemes
+create_tree_comparison_plots <- function(newick_file_path, save_base_path = NULL) {
+    # Create a comparison of the same tree with different color schemes and layouts.
+    
+    schemes <- list(
+        list(name = "Auto_Clade", scheme = "clade_auto", palette = "Set1"),
+        list(name = "Viridis_Gradient", scheme = "gradient", palette = "viridis"),
+        list(name = "Plasma_Clade", scheme = "clade_auto", palette = "plasma"),
+        list(name = "Branch_Length", scheme = "branch_length", palette = "viridis")
+    )
+    
+    plots <- list()
+    
+    for (i in seq_along(schemes)) {
+        scheme_info <- schemes[[i]]
+        
+        p <- plot_phylogenetic_tree_ggtree(
+            newick_file_path = newick_file_path,
+            color_scheme = scheme_info$scheme,
+            color_palette = scheme_info$palette,
+            title = paste("Tree Visualization:", scheme_info$name),
+            save_path = if(!is.null(save_base_path)) paste0(save_base_path, "_", scheme_info$name) else NULL
+        )
+        
+        plots[[scheme_info$name]] <- p
+    }
+    
+    return(plots)
+}
+```
+
+### 1.5.2 Advanced Species Tree Visualizations with R ggtree
+
+#### Publication-Quality Rooted Species Tree with Clade Coloring
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt)
+
+```{r}
+# Publication-quality rooted species tree with automatic clade coloring
+p_rooted_colorful <- plot_phylogenetic_tree_ggtree(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    layout = "rectangular",
+    color_scheme = "clade_auto",
+    color_palette = "Set1",
+    n_clusters = 6,
+    clade_method = "depth",
+    branch_size = 1.5,
+    tip_size = 5,
+    show_tip_labels = TRUE,
+    tip_label_size = 14,
+    tip_label_offset = 0.01,
+    show_scale_bar = TRUE,
+    title = "Species Phylogenetic Tree (Rooted) - Colorful Clades",
+    title_size = 18,
+    plot_width = 16,
+    plot_height = 12,
+    theme_style = "publication",
+    save_path = "./Notebooks/Figures/SpeciesTree_rooted_ggtree_colorful",
+    # output_formats = c("png", "pdf", "svg")
+    output_formats = c("png", "pdf")
+)
+
+print(p_rooted_colorful)
+```
+
+#### Circular Tree with Plasma Color Palette
+```{r}
+# Beautiful circular tree with plasma color scheme
+p_circular <- plot_circular_tree_ggtree(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    color_scheme = "clade_auto",
+    color_palette = "plasma",
+    n_clusters = 5,
+    branch_size = 1.2,
+    tip_size = 6,
+    show_tip_labels = TRUE,
+    tip_label_size = 12,
+    title = "Species Phylogenetic Tree - Circular Layout (Plasma Colors)",
+    title_size = 16,
+    plot_width = 14,
+    plot_height = 14,
+    save_path = "./Notebooks/Figures/SpeciesTree_circular_plasma",
+    output_formats = c("png", "pdf")
+)
+
+print(p_circular)
+```
+
+#### Fan Tree with Gradient Branch Coloring
+```{r}
+# Fan-shaped tree with gradient coloring based on branch lengths
+p_fan_gradient <- plot_fan_tree_ggtree(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    color_scheme = "gradient",
+    color_palette = "viridis",
+    branch_size = 1.0,
+    tip_size = 4,
+    show_tip_labels = TRUE,
+    tip_label_size = 10,
+    tip_label_angle = 0,
+    show_branch_length = TRUE,
+    branch_length_digits = 3,
+    title = "Species Tree - Fan Layout with Branch Length Gradient",
+    title_size = 16,
+    plot_width = 14,
+    plot_height = 14,
+    save_path = "./Notebooks/Figures/SpeciesTree_fan_gradient",
+    output_formats = c("png", "pdf")
+)
+
+print(p_fan_gradient)
+```
+
+#### Gene Duplications Tree with Enhanced Styling
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt)
+
+```{r}
+# Gene duplication tree with special highlighting and node support
+p_gene_dup <- plot_phylogenetic_tree_ggtree(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt",
+    layout = "rectangular",
+    color_scheme = "clade_auto",
+    color_palette = "Dark2",
+    n_clusters = 7,
+    clade_method = "height",
+    branch_size = 1.8,
+    tip_size = 5,
+    show_tip_labels = TRUE,
+    tip_label_size = 14,
+    show_node_support = TRUE,
+    node_support_size = 10,
+    show_branch_length = TRUE,
+    branch_length_digits = 3,
+    title = "Species Tree with Gene Duplication Events - Enhanced ggtree",
+    title_size = 18,
+    plot_width = 18,
+    plot_height = 12,
+    theme_style = "publication",
+    save_path = "./Notebooks/Figures/SpeciesTree_GeneDup_ggtree_enhanced",
+    # output_formats = c("png", "pdf", "svg")
+    output_formats = c("png", "pdf")
+)
+
+print(p_gene_dup)
+```
+
+#### Multi-Layout Comparison
+```{r}
+# Create comparison plots with different visualization schemes
+tree_comparisons <- create_tree_comparison_plots(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    save_base_path = "./Notebooks/Figures/SpeciesTree_comparison"
+)
+
+# Display all comparison plots
+for (plot_name in names(tree_comparisons)) {
+    cat("\\n=== Tree Visualization:", plot_name, "===\\n")
+    print(tree_comparisons[[plot_name]])
+}
+```
+
+#### Interactive Tree Exploration
+```{r}
+# Advanced tree with multiple annotation layers
+p_advanced <- plot_phylogenetic_tree_ggtree(
+    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt",
+    layout = "rectangular",
+    color_scheme = "clade_auto",
+    color_palette = "Spectral",
+    n_clusters = 8,
+    clade_method = "depth",
+    branch_size = 2.0,
+    tip_size = 6,
+    show_tip_labels = TRUE,
+    tip_label_size = 16,
+    tip_label_offset = 0.005,
+    show_node_support = TRUE,
+    node_support_size = 12,
+    show_branch_length = TRUE,
+    branch_length_digits = 4,
+    show_scale_bar = TRUE,
+    title = "Advanced Species Tree - Multi-Annotated Visualization",
+    title_size = 20,
+    plot_width = 20,
+    plot_height = 14,
+    theme_style = "publication",
+    save_path = "./Notebooks/Figures/SpeciesTree_advanced_multi_annotated",
+    output_formats = c("png", "pdf"), # output_formats = c("png", "pdf", "svg"),
+    dpi = 600  # Ultra-high resolution for publication
+)
+
+print(p_advanced)
+```
+
+## 2. Individual Orthogroup Analysis
+
+### 2.1 Orthogroup Bar Chart Function
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def plot_orthogroup_bar_chart(tsv_file_path, orthogroup_id):
+    """
+    Create bar chart showing gene counts per species for a specific orthogroup.
+    """
+    # Load the TSV file into a pandas DataFrame
+    df = pd.read_csv(tsv_file_path, sep='\t')
+    
+    # Find the row corresponding to the given orthogroup_id
+    row = df[df['Orthogroup'] == orthogroup_id]
+    
+    if row.empty:
+        print(f"No data found for Orthogroup ID: {orthogroup_id}")
+        return
+
+    # Extract the data, excluding the 'Orthogroup' and 'Total' columns
+    data = row.iloc[0].drop(labels=['Orthogroup', 'Total']).to_dict()
+
+    # Create a bar plot for the specified orthogroup_id
+    plt.figure(figsize=(10, 6))
+    plt.bar(data.keys(), data.values())
+    plt.title(f'Gene Counts for {orthogroup_id}')
+    plt.xlabel('Species')
+    plt.ylabel('Gene Count')
+    plt.xticks(rotation=45, ha='right')
+    
+    # Show the plot
+    plt.tight_layout()
+    plt.savefig("./Notebooks/Figures/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.png")
+    plt.savefig("./Notebooks/Figures/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.pdf")
+    plt.show()
+```
+
+### 2.2 Example Individual Orthogroups
+
+#### OG0000000
+```{python}
+plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', 'OG0000000')
+```
+
+#### OG0000001
+```{python}
+plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', 'OG0000001')
+```
+
+### 2.3 Batch Generation of All Orthogroup Bar Charts
+
+```{python}
+# Generate bar charts for all orthogroups
+df = pd.read_csv('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', sep='\t')
+orthogroup_list = df['Orthogroup'].tolist()
+
+print(f"Generating bar charts for {len(orthogroup_list)} orthogroups...")
+for i, orthogroup in enumerate(orthogroup_list):
+    if i % 1000 == 0:
+        print(f"Progress: {i}/{len(orthogroup_list)} orthogroups processed")
+    plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', orthogroup)
+print("All orthogroup bar charts generated!")
+```
+
+## 3. Gene Tree Visualization
+
+### 3.1 Gene Tree Analysis Functions
+
+```{python}
+from Bio import Phylo
+import matplotlib.pyplot as plt
+
+def select_representatives(tree, max_depth=2):
+    """
+    Selects representative clade labels based on tree depth.
+
+    Parameters:
+    - tree: Phylogenetic tree object loaded using Bio.Phylo.
+    - max_depth: int, the maximum depth level to consider clades from.
+
+    Returns:
+    - representative_labels: list of str, containing clade names considered representative.
+    """
+    representative_labels = []
+    
+    def visit_clade(clade, current_depth):
+        if current_depth == max_depth:
+            # Leaf node at the required depth
+            if clade.name:
+                representative_labels.append(clade.name)
+        else:
+            for child in clade.clades:
+                visit_clade(child, current_depth + 1)
+    
+    visit_clade(tree.root, 0)
+    return representative_labels
+
+def prune_and_plot_tree(newick_file_path, max_depth=2, figsize=(13, 10), orientation='horizontal', save_path=None):
+    """
+    Load a phylogenetic tree from a Newick file, select representatives based on depth, and plot.
+
+    Parameters:
+    - newick_file_path: str, path to the Newick file containing the tree.
+    - max_depth: int, the maximum depth level to keep as representatives.
+    - figsize: tuple(int, int), optional, size of the plot figure.
+    - orientation: str, 'horizontal' or 'vertical' to orient the tree.
+    - save_path: str, optional, base path to save the figure (saves as PNG and PDF)
+
+    Returns:
+    - None, but displays the pruned phylogenetic tree plot.
+    """
+    # Load the tree from the Newick file
+    tree = Phylo.read(newick_file_path, "newick")
+    
+    # Automatically select representative clades
+    representative_labels = select_representatives(tree, max_depth)
+
+    # Prune the tree
+    for clade in tree.get_terminals():
+        if clade.name not in representative_labels:
+            # Remove unwanted clades
+            tree.prune(target=clade)
+
+    # Configure Matplotlib figure
+    fig = plt.figure(figsize=figsize)
+    axes = fig.add_subplot(1, 1, 1)
+    
+    # Draw the pruned tree
+    Phylo.draw(tree, axes=axes, do_show=False)
+
+    # Adjust tree orientation if needed
+    if orientation == 'vertical':
+        axes.set_aspect('equal')
+        plt.xticks(rotation=90)
+
+    # Save the plot if path provided
+    if save_path:
+        plt.savefig(f"{save_path}.png")
+        plt.savefig(f"{save_path}.pdf")
+    
+    # Display the plot
+    plt.tight_layout()
+    plt.show()
+```
+
+### 3.2 Example Gene Trees
+
+#### OG0000000 Gene Tree
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt)
+
+```{python}
+prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt', max_depth=8, save_path="./Notebooks/Figures/OG0000000_gene_tree")
+```
+
+#### OG0000001 Gene Tree
+- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt)
+
+```{python}
+prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt', max_depth=8, save_path="./Notebooks/Figures/OG0000001_gene_tree")
+```
+
+## 4. Comprehensive Heatmap Analysis
+
+### 4.1 Heatmap Analysis Functions
+
+```{python}
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from typing import Optional, Tuple, List
+
+def load_and_process_orthogroup_data(
+    file_path: str, 
+    drop_total: bool = True
+) -> pd.DataFrame:
+    """
+    Load and preprocess orthogroup gene count data.
+    
+    Parameters:
+    - file_path: str, path to the TSV file containing orthogroup gene counts
+    - drop_total: bool, whether to drop the 'Total' column (default: True)
+    
+    Returns:
+    - pd.DataFrame: processed data with Orthogroup as index
+    """
+    try:
+        data = pd.read_csv(file_path, sep='\t')
+        data.set_index('Orthogroup', inplace=True)
+        
+        if drop_total and 'Total' in data.columns:
+            data = data.drop(columns='Total')
+        
+        return data
+    except Exception as e:
+        raise ValueError(f"Error loading data from {file_path}: {str(e)}")
+
+def create_publication_heatmap(
+    data: pd.DataFrame,
+    title: str,
+    save_path: str,
+    figsize: Tuple[int, int] = (12, 10),
+    cmap: str = 'viridis',
+    annot: bool = False,
+    xlabel: str = 'Species',
+    ylabel: str = 'Orthogroups',
+    rotation: int = 45,
+    dpi: int = 300,
+    publication_ready: bool = True,
+    show_dendrograms: bool = False,
+    cluster_rows: bool = False,
+    cluster_cols: bool = False,
+    center_cmap: bool = False,
+    robust_color_scale: bool = True,
+    add_colorbar_label: str = 'Gene Count',
+    font_scale: float = 1.2,
+    cell_aspect: str = 'auto',
+    border_color: str = 'white',
+    border_width: float = 0.5,
+    # Advanced publication options
+    data_transform: str = 'none',
+    show_statistics: bool = False,
+    stat_position: str = 'bottom_right',
+    colorbar_extend: str = 'neither',
+    annotation_threshold: Optional[float] = None,
+    custom_annotation_func: Optional[callable] = None,
+    subplot_margins: dict = None,
+    journal_style: str = 'nature',
+    add_grid: bool = False,
+    grid_style: dict = None,
+    mask_zeros: bool = False,
+    highlight_diagonal: bool = False,
+    add_subplot_labels: bool = False,
+    subplot_label_style: dict = None
+) -> None:
+    """
+    Create an advanced publication-quality heatmap with comprehensive styling, statistical overlays, 
+    and professional formatting optimized for scientific journals.
+    
+    Parameters:
+    - data: pd.DataFrame, data to plot
+    - title: str, plot title
+    - save_path: str, base path to save the figure (saves as PNG and PDF)
+    - figsize: tuple, figure size in inches
+    - cmap: str, colormap ('viridis', 'plasma', 'publication_blue', 'publication_warm', 
+             'nature_blue', 'science_red', 'cell_green', 'plos_orange')
+    - annot: bool, whether to annotate cells with values
+    - xlabel: str, x-axis label
+    - ylabel: str, y-axis label  
+    - rotation: int, x-axis label rotation angle
+    - dpi: int, resolution for saved figures (300+ recommended for publication)
+    - publication_ready: bool, apply publication-ready styling
+    - show_dendrograms: bool, whether to show clustering dendrograms
+    - cluster_rows: bool, whether to cluster rows hierarchically
+    - cluster_cols: bool, whether to cluster columns hierarchically
+    - center_cmap: bool, whether to center colormap at zero
+    - robust_color_scale: bool, use robust percentiles for color scaling
+    - add_colorbar_label: str, label for the colorbar
+    - font_scale: float, scaling factor for fonts
+    - cell_aspect: str, aspect ratio of cells ('auto', 'equal', or float)
+    - border_color: str, color of cell borders
+    - border_width: float, width of cell borders
+    
+    Advanced Options:
+    - data_transform: str, data transformation ('none', 'log10', 'log2', 'zscore', 'minmax')
+    - show_statistics: bool, overlay statistical information on the plot
+    - stat_position: str, position for statistics ('bottom_right', 'top_left', 'bottom_left', 'top_right')
+    - colorbar_extend: str, colorbar extension ('neither', 'both', 'min', 'max')
+    - annotation_threshold: float, optional threshold for conditional cell annotations
+    - custom_annotation_func: callable, custom function for cell annotations
+    - subplot_margins: dict, custom margins ({'left': 0.1, 'right': 0.9, 'top': 0.9, 'bottom': 0.1})
+    - journal_style: str, journal-specific styling ('nature', 'science', 'cell', 'plos', 'generic')
+    - add_grid: bool, whether to add a subtle grid overlay
+    - grid_style: dict, grid styling options
+    - mask_zeros: bool, whether to mask zero values
+    - highlight_diagonal: bool, whether to highlight diagonal elements (for symmetric matrices)
+    - add_subplot_labels: bool, whether to add subplot labels (A, B, C, etc.)
+    - subplot_label_style: dict, styling for subplot labels
+    """
+    import seaborn as sns
+    import numpy as np
+    from matplotlib.colors import LinearSegmentedColormap, LogNorm, PowerNorm
+    from matplotlib.patches import Rectangle
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    from scipy import stats
+    import matplotlib.patches as mpatches
+    
+    # Validate input data
+    if data.empty:
+        raise ValueError("Input data is empty")
+    
+    # Apply data transformations
+    data_processed = data.copy()
+    transform_label = ""
+    
+    if data_transform == 'log10':
+        data_processed = np.log10(data_processed + 1)  # Add 1 to handle zeros
+        transform_label = " (log₁₀ transformed)"
+        add_colorbar_label += " (log₁₀)"
+    elif data_transform == 'log2':
+        data_processed = np.log2(data_processed + 1)
+        transform_label = " (log₂ transformed)"
+        add_colorbar_label += " (log₂)"
+    elif data_transform == 'zscore':
+        scaler = StandardScaler()
+        data_processed = pd.DataFrame(
+            scaler.fit_transform(data_processed),
+            index=data.index,
+            columns=data.columns
+        )
+        transform_label = " (Z-score normalized)"
+        add_colorbar_label = "Z-score"
+    elif data_transform == 'minmax':
+        scaler = MinMaxScaler()
+        data_processed = pd.DataFrame(
+            scaler.fit_transform(data_processed),
+            index=data.index,
+            columns=data.columns
+        )
+        transform_label = " (Min-Max normalized)"
+        add_colorbar_label = "Normalized Value"
+    
+    # Journal-specific styling configurations
+    journal_configs = {
+        'nature': {
+            'font_family': 'sans-serif',
+            'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'title_size': int(14 * font_scale),
+            'label_size': int(12 * font_scale),
+            'tick_size': int(10 * font_scale),
+            'cmap_default': 'viridis'
+        },
+        'science': {
+            'font_family': 'serif',
+            'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+            'title_size': int(16 * font_scale),
+            'label_size': int(14 * font_scale),
+            'tick_size': int(12 * font_scale),
+            'cmap_default': 'plasma'
+        },
+        'cell': {
+            'font_family': 'sans-serif',
+            'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'title_size': int(15 * font_scale),
+            'label_size': int(13 * font_scale),
+            'tick_size': int(11 * font_scale),
+            'cmap_default': 'cell_green'
+        },
+        'plos': {
+            'font_family': 'serif',
+            'font_serif': ['Liberation Serif', 'Times New Roman', 'DejaVu Serif'],
+            'title_size': int(14 * font_scale),
+            'label_size': int(12 * font_scale),
+            'tick_size': int(10 * font_scale),
+            'cmap_default': 'plos_orange'
+        },
+        'generic': {
+            'font_family': 'serif',
+            'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+            'title_size': int(16 * font_scale),
+            'label_size': int(14 * font_scale),
+            'tick_size': int(12 * font_scale),
+            'cmap_default': 'viridis'
+        }
+    }
+    
+    # Set publication-ready style with journal-specific settings
+    config = journal_configs.get(journal_style, journal_configs['generic'])
+    
+    if publication_ready:
+        plt.style.use('default')
+        rcParams_config = {
+            'font.family': config['font_family'],
+            'font.size': config['tick_size'],
+            'axes.linewidth': 1.8,
+            'axes.spines.top': False,
+            'axes.spines.right': False,
+            'figure.facecolor': 'white',
+            'axes.facecolor': 'white',
+            'savefig.facecolor': 'white',
+            'savefig.edgecolor': 'none',
+            'axes.edgecolor': '#333333',
+            'axes.labelcolor': '#333333',
+            'text.color': '#333333',
+            'xtick.color': '#333333',
+            'ytick.color': '#333333',
+            'patch.linewidth': 0.5,
+            'patch.facecolor': '#348ABD',
+            'patch.edgecolor': '#EEEEEE',
+            'patch.antialiased': True
+        }
+        
+        # Add font-specific settings
+        if config['font_family'] == 'serif':
+            rcParams_config['font.serif'] = config['font_serif']
+        else:
+            rcParams_config['font.sans-serif'] = config['font_sans']
+            
+        plt.rcParams.update(rcParams_config)
+    
+    # Advanced colormap options with journal-specific schemes
+    if cmap == 'publication_blue':
+        colors = ['#f7fbff', '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6', '#2171b5', '#084594']
+        cmap = LinearSegmentedColormap.from_list('publication_blue', colors)
+    elif cmap == 'publication_warm':
+        colors = ['#fff7ec', '#fee8c8', '#fdd49e', '#fdbb84', '#fc8d59', '#ef6548', '#d7301f', '#990000']
+        cmap = LinearSegmentedColormap.from_list('publication_warm', colors)
+    elif cmap == 'nature_blue':
+        colors = ['#ffffff', '#e6f3ff', '#cce7ff', '#99d6ff', '#66c2ff', '#3399ff', '#0066cc', '#004499']
+        cmap = LinearSegmentedColormap.from_list('nature_blue', colors)
+    elif cmap == 'science_red':
+        colors = ['#ffffff', '#ffe6e6', '#ffcccc', '#ff9999', '#ff6666', '#ff3333', '#cc0000', '#990000']
+        cmap = LinearSegmentedColormap.from_list('science_red', colors)
+    elif cmap == 'cell_green':
+        colors = ['#ffffff', '#e6ffe6', '#ccffcc', '#99ff99', '#66ff66', '#33cc33', '#009900', '#006600']
+        cmap = LinearSegmentedColormap.from_list('cell_green', colors)
+    elif cmap == 'plos_orange':
+        colors = ['#ffffff', '#fff2e6', '#ffe6cc', '#ffd699', '#ffc266', '#ffad33', '#ff9900', '#cc7700']
+        cmap = LinearSegmentedColormap.from_list('plos_orange', colors)
+    
+    # Configure color scaling with advanced options
+    vmin, vmax = None, None
+    if robust_color_scale:
+        vmin, vmax = np.percentile(data_processed.values.flatten(), [2, 98])
+    
+    if center_cmap:
+        # Center colormap at zero for diverging data
+        max_abs = max(abs(data_processed.min().min()), abs(data_processed.max().max()))
+        vmin, vmax = -max_abs, max_abs
+        if cmap in ['viridis', 'plasma', 'nature_blue']:  # Switch to diverging colormap
+            cmap = 'RdBu_r'
+    
+    # Create mask for zero values if requested
+    mask = None
+    if mask_zeros:
+        mask = data_processed == 0
+    
+    # Create figure with enhanced layout control
+    if subplot_margins is None:
+        subplot_margins = {'left': 0.12, 'right': 0.88, 'top': 0.92, 'bottom': 0.15}
+    
+    fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+    fig.subplots_adjust(**subplot_margins)
+    
+    # Enhanced annotation logic
+    annot_data = None
+    if annot:
+        if custom_annotation_func:
+            annot_data = data_processed.applymap(custom_annotation_func)
+        elif annotation_threshold is not None:
+            # Conditional annotations - only show values above threshold
+            annot_data = data_processed.where(data_processed.abs() >= annotation_threshold, '')
+        else:
+            annot_data = data_processed
+    
+    # Enhanced colorbar configuration
+    colorbar_kws = {
+        'shrink': 0.8,
+        'aspect': 25,
+        'pad': 0.03,
+        'label': add_colorbar_label,
+        'extend': colorbar_extend,
+        'orientation': 'vertical',
+        'format': '%.1f' if data_transform in ['zscore', 'minmax'] else '%.0f'
+    }
+    
+    # Create the heatmap with enhanced options
+    heatmap_kwargs = {
+        'cmap': cmap,
+        'annot': annot_data if annot else False,
+        'fmt': '' if annot_data is not None else '.1f',
+        'annot_kws': {'fontsize': int(8 * font_scale), 'color': '#333333'},
+        'linewidths': border_width,
+        'linecolor': border_color,
+        'cbar_kws': colorbar_kws,
+        'square': cell_aspect == 'equal',
+        'xticklabels': True,
+        'yticklabels': True,
+        'mask': mask
+    }
+    
+    # Add clustering if requested
+    if show_dendrograms or cluster_rows or cluster_cols:
+        # Use clustermap for hierarchical clustering
+        g = sns.clustermap(
+            data_processed,
+            row_cluster=cluster_rows,
+            col_cluster=cluster_cols,
+            figsize=figsize,
+            dendrogram_ratio=0.15 if show_dendrograms else 0.0,
+            colors_ratio=0.03,
+            cmap=cmap,
+            **{k: v for k, v in heatmap_kwargs.items() if k not in ['square', 'cmap']}
+        )
+        
+        # Enhanced clustermap styling
+        g.fig.suptitle(f'{title}{transform_label}', 
+                      fontsize=config['title_size'], 
+                      fontweight='bold', 
+                      y=0.98)
+        g.ax_heatmap.set_xlabel(xlabel, fontsize=config['label_size'], labelpad=12)
+        g.ax_heatmap.set_ylabel(ylabel, fontsize=config['label_size'], labelpad=12)
+        
+        # Enhanced tick styling
+        plt.setp(g.ax_heatmap.get_xticklabels(), 
+                rotation=rotation, ha='right', fontsize=config['tick_size'])
+        plt.setp(g.ax_heatmap.get_yticklabels(), 
+                rotation=0, fontsize=config['tick_size'])
+        
+        # Add statistics if requested
+        if show_statistics:
+            stats_text = _create_statistics_text(data_processed)
+            _add_statistics_annotation(g.fig, stats_text, stat_position, font_scale)
+        
+        # Save the clustermap with enhanced quality
+        g.savefig(f"{save_path}.png", dpi=dpi, bbox_inches='tight', 
+                 facecolor='white', edgecolor='none')
+        g.savefig(f"{save_path}.pdf", bbox_inches='tight', 
+                 facecolor='white', edgecolor='none')
+        
+    else:
+        # Standard heatmap with advanced features
+        if vmin is not None and vmax is not None:
+            heatmap_kwargs.update({'vmin': vmin, 'vmax': vmax})
+        
+        # Create the main heatmap
+        im = sns.heatmap(data_processed, ax=ax, **heatmap_kwargs)
+        
+        # Highlight diagonal if requested (useful for correlation matrices)
+        if highlight_diagonal and data_processed.shape[0] == data_processed.shape[1]:
+            for i in range(min(data_processed.shape)):
+                rect = Rectangle((i, i), 1, 1, fill=False, edgecolor='black', 
+                               linewidth=2, alpha=0.8)
+                ax.add_patch(rect)
+        
+        # Add grid overlay if requested
+        if add_grid:
+            grid_defaults = {'alpha': 0.2, 'linewidth': 0.5, 'color': '#666666'}
+            if grid_style:
+                grid_defaults.update(grid_style)
+            ax.grid(True, **grid_defaults)
+            ax.set_axisbelow(True)
+        
+        # Enhanced title with transformation info
+        full_title = f'{title}{transform_label}'
+        ax.set_title(full_title, fontsize=config['title_size'], 
+                    fontweight='bold', pad=25, color='#333333')
+        
+        # Enhanced axis styling
+        ax.set_xlabel(xlabel, fontsize=config['label_size'], labelpad=12, color='#333333')
+        ax.set_ylabel(ylabel, fontsize=config['label_size'], labelpad=12, color='#333333')
+        
+        # Advanced tick customization
+        ax.tick_params(
+            axis='x', 
+            rotation=rotation, 
+            labelsize=config['tick_size'],
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        ax.tick_params(
+            axis='y', 
+            rotation=0, 
+            labelsize=config['tick_size'],
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        
+        # Enhanced label alignment
+        plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline')
+        plt.setp(ax.get_yticklabels(), ha='right', va='center')
+        
+        # Add subplot labels if requested
+        if add_subplot_labels:
+            label_defaults = {
+                'fontsize': int(16 * font_scale),
+                'fontweight': 'bold',
+                'color': '#333333'
+            }
+            if subplot_label_style:
+                label_defaults.update(subplot_label_style)
+            
+            ax.text(-0.15, 1.05, 'A', transform=ax.transAxes, **label_defaults)
+        
+        # Add statistical overlay if requested
+        if show_statistics:
+            stats_text = _create_statistics_text(data_processed)
+            _add_statistics_annotation(fig, stats_text, stat_position, font_scale)
+        
+        # Enhanced layout with better spacing
+        plt.tight_layout()
+        
+        # Save figures with publication-quality settings
+        save_kwargs = {
+            'dpi': dpi,
+            'bbox_inches': 'tight',
+            'facecolor': 'white',
+            'edgecolor': 'none',
+            'metadata': {
+                'Title': full_title,
+                'Author': 'Comparative Genomics Analysis',
+                'Subject': 'Heatmap Visualization',
+                'Creator': 'Python Matplotlib/Seaborn'
+            }
+        }
+        
+        plt.savefig(f"{save_path}.png", format='png', **save_kwargs)
+        plt.savefig(f"{save_path}.pdf", format='pdf', **save_kwargs)
+        
+        # Save high-resolution version for print
+        plt.savefig(f"{save_path}_print.png", format='png', dpi=600, 
+                   bbox_inches='tight', facecolor='white', edgecolor='none')
+    
+    plt.show()
+
+def _create_statistics_text(data: pd.DataFrame) -> str:
+    """Helper function to create statistical summary text for heatmap overlay."""
+    stats_info = []
+    
+    # Basic statistics
+    stats_info.append(f"Shape: {data.shape[0]}×{data.shape[1]}")
+    stats_info.append(f"Range: {data.min().min():.2f}–{data.max().max():.2f}")
+    stats_info.append(f"Mean: {data.mean().mean():.2f}")
+    
+    # Calculate correlation if data is square (suitable for species comparison)
+    if data.shape[0] == data.shape[1]:
+        # Calculate mean off-diagonal correlation for symmetric matrices
+        np.fill_diagonal(data.values, np.nan)  # Exclude diagonal
+        mean_corr = np.nanmean(data.values)
+        stats_info.append(f"Mean off-diag: {mean_corr:.2f}")
+    
+    return "\\n".join(stats_info)
+
+def _add_statistics_annotation(fig, stats_text: str, position: str, font_scale: float) -> None:
+    """Helper function to add statistical annotations to the figure."""
+    position_coords = {
+        'bottom_right': (0.98, 0.02),
+        'top_right': (0.98, 0.98),
+        'bottom_left': (0.02, 0.02),
+        'top_left': (0.02, 0.98)
+    }
+    
+    position_va = {
+        'bottom_right': 'bottom',
+        'top_right': 'top',
+        'bottom_left': 'bottom',
+        'top_left': 'top'
+    }
+    
+    x, y = position_coords.get(position, (0.98, 0.02))
+    va = position_va.get(position, 'bottom')
+    
+    # Add statistics text box
+    fig.text(
+        x, y, stats_text,
+        transform=fig.transFigure,
+        fontsize=int(9 * font_scale),
+        bbox=dict(
+            boxstyle="round,pad=0.5",
+            facecolor='white',
+            edgecolor='#CCCCCC',
+            alpha=0.9
+        ),
+        ha='right' if 'right' in position else 'left',
+        va=va,
+        color='#333333'
+    )
+
+def filter_orthogroups_by_variance(
+    data: pd.DataFrame, 
+    top_n: int = 100
+) -> pd.DataFrame:
+    """
+    Filter orthogroups by variance across species.
+    
+    Parameters:
+    - data: pd.DataFrame, orthogroup gene count data
+    - top_n: int, number of top variance orthogroups to return
+    
+    Returns:
+    - pd.DataFrame: filtered data with highest variance orthogroups
+    """
+    data_with_variance = data.copy()
+    data_with_variance['Variance'] = data_with_variance.var(axis=1)
+    
+    top_orthogroups = data_with_variance.sort_values(
+        by='Variance', ascending=False
+    ).head(top_n)
+    
+    return top_orthogroups.drop(columns='Variance')
+
+def filter_orthogroups_by_species_extreme(
+    data: pd.DataFrame,
+    target_species: str,
+    extreme_type: str = 'max',
+    apply_variance_filter: bool = False,
+    variance_top_n: int = 50
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Filter orthogroups where target species has extreme (max/min) gene counts.
+    
+    Parameters:
+    - data: pd.DataFrame, orthogroup gene count data
+    - target_species: str, species name to analyze
+    - extreme_type: str, 'max' or 'min' for maximum or minimum counts
+    - apply_variance_filter: bool, whether to apply additional variance filtering
+    - variance_top_n: int, number of top variance orthogroups if filtering
+    
+    Returns:
+    - tuple: (filtered_data, orthogroup_ids)
+    """
+    if target_species not in data.columns:
+        raise ValueError(f"Species '{target_species}' not found in data columns")
+    
+    if extreme_type == 'max':
+        data_extreme = data.max(axis=1)
+        mask = data[target_species] == data_extreme
+    elif extreme_type == 'min':
+        data_extreme = data.min(axis=1)
+        mask = data[target_species] == data_extreme
+    else:
+        raise ValueError("extreme_type must be 'max' or 'min'")
+    
+    extreme_genes_OG = data.index[mask].tolist()
+    filtered_data = data.loc[extreme_genes_OG]
+    
+    if apply_variance_filter:
+        filtered_data = filter_orthogroups_by_variance(filtered_data, variance_top_n)
+    
+    return filtered_data, extreme_genes_OG
+
+def filter_species_specific_orthogroups(
+    data: pd.DataFrame,
+    target_species: str,
+    apply_variance_filter: bool = False,
+    variance_top_n: int = 50
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Filter orthogroups where only the target species has non-zero gene counts.
+    
+    Parameters:
+    - data: pd.DataFrame, orthogroup gene count data
+    - target_species: str, species name to analyze
+    - apply_variance_filter: bool, whether to apply additional variance filtering
+    - variance_top_n: int, number of top variance orthogroups if filtering
+    
+    Returns:
+    - tuple: (filtered_data, orthogroup_ids)
+    """
+    if target_species not in data.columns:
+        raise ValueError(f"Species '{target_species}' not found in data columns")
+    
+    other_species = data.columns.drop(target_species)
+    condition1 = data[target_species] > 0
+    condition2 = (data[other_species] == 0).all(axis=1)
+    final_mask = condition1 & condition2
+    
+    unique_nonzero_genes_OG = data.index[final_mask].tolist()
+    filtered_data = data.loc[unique_nonzero_genes_OG]
+    
+    if apply_variance_filter:
+        filtered_data = filter_orthogroups_by_variance(filtered_data, variance_top_n)
+    
+    return filtered_data, unique_nonzero_genes_OG
+```
+
+### 4.2 Data Overview
+
+```{python}
+!head -n 10 ./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv
+```
+
+### 4.3 Top Variance Heatmap
+
+```{python}
+# Load and process the data
+file_path = './Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv'
+data = load_and_process_orthogroup_data(file_path)
+
+# Filter by variance and create heatmap
+top_variance_data = filter_orthogroups_by_variance(data, top_n=100)
+
+create_publication_heatmap(
+    data=top_variance_data,
+    title='Gene Counts Heatmap for Top 100 Orthogroups with Highest Variance',
+    save_path="./Notebooks/Figures/heatmap_top_variance",
+    figsize=(14, 12),
+    publication_ready=True
+)
+```
+
+### 4.4 Aspiorhynchus_laticeps-Focused Analysis
+
+#### 4.4.1 Increased Gene Count Heatmaps
+
+##### Maximum Count Analysis (With Variance Sorting)
+```{python}
+# Same analysis but with variance filtering
+max_count_variance_data, _ = filter_orthogroups_by_species_extreme(
+    data=data,
+    target_species='Aspiorhynchus_laticeps',
+    extreme_type='max',
+    apply_variance_filter=True,
+    variance_top_n=50
+)
+
+create_publication_heatmap(
+    data=max_count_variance_data,
+    title="Gene Counts: 'Aspiorhynchus_laticeps' Maximum Count (Top 50 by Variance)",
+    save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_max_variance",
+    figsize=(14, 12),
+    publication_ready=True
+)
+```
+
+#### 4.4.2 Decreased Gene Count Heatmaps
+
+##### Minimum Count Analysis (With Variance Sorting)
+```{python}
+# Same analysis but with variance filtering
+min_count_variance_data, _ = filter_orthogroups_by_species_extreme(
+    data=data,
+    target_species='Aspiorhynchus_laticeps',
+    extreme_type='min',
+    apply_variance_filter=True,
+    variance_top_n=50
+)
+
+create_publication_heatmap(
+    data=min_count_variance_data,
+    title="Gene Counts: 'Aspiorhynchus_laticeps' Minimum Count (Top 50 by Variance)",
+    save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_min_variance",
+    figsize=(14, 12),
+    publication_ready=True
+)
+```
+
+#### 4.4.3 Species-Specific Heatmaps
+
+##### Species-Specific Analysis (With Variance Sorting)
+```{python}
+# Same analysis but with variance filtering
+species_specific_variance_data, _ = filter_species_specific_orthogroups(
+    data=data,
+    target_species='Aspiorhynchus_laticeps',
+    apply_variance_filter=True,
+    variance_top_n=50
+)
+
+create_publication_heatmap(
+    data=species_specific_variance_data,
+    title="Gene Counts: 'Aspiorhynchus_laticeps' Species-Specific (Top 50 by Variance)",
+    save_path="./Notebooks/Figures/heatmap_unique_nonzero_Aspiorhynchus_variance",
+    figsize=(14, 12),
+    publication_ready=True
+)
+```
+
+## 5. Species Overlap Analysis
+
+### 5.1 Species Overlap Analysis Functions
+
+```{python}
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+from typing import Optional
+
+def create_species_overlap_heatmap(
+    file_path: str,
+    save_path: str,
+    normalize: bool = False,
+    figsize: Tuple[int, int] = (12, 10),
+    cmap: str = 'viridis',
+    annot: bool = False,
+    linewidths: float = 0.8,
+    dpi: int = 300,
+    publication_ready: bool = True,
+    # Advanced styling options
+    title: Optional[str] = None,
+    xlabel: str = 'Species',
+    ylabel: str = 'Species',
+    rotation: int = 45,
+    font_scale: float = 1.2,
+    journal_style: str = 'nature',
+    data_transform: str = 'none',
+    show_statistics: bool = False,
+    stat_position: str = 'bottom_right',
+    # Matrix-specific options
+    highlight_diagonal: bool = True,
+    mask_diagonal: bool = False,
+    cluster_rows: bool = False,
+    cluster_cols: bool = False,
+    show_dendrograms: bool = False,
+    # Advanced annotation options
+    annotation_threshold: Optional[float] = None,
+    custom_annotation_func: Optional[callable] = None,
+    # Color and layout options
+    colorbar_extend: str = 'neither',
+    add_colorbar_label: str = 'Shared Orthogroups',
+    robust_color_scale: bool = True,
+    add_grid: bool = False,
+    grid_style: dict = None,
+    subplot_margins: dict = None,
+    add_subplot_labels: bool = False,
+    # Clustering and correlation options
+    show_correlation_values: bool = False,
+    correlation_method: str = 'pearson',
+    add_significance_stars: bool = False
+) -> pd.DataFrame:
+    """
+    Create an advanced publication-quality heatmap for species overlap analysis with comprehensive
+    styling options, statistical overlays, and professional formatting optimized for scientific journals.
+    
+    Parameters:
+    - file_path: str, path to the TSV file containing species overlap data
+    - save_path: str, base path to save the figure (saves as PNG and PDF)
+    - normalize: bool, whether to normalize the data using MinMaxScaler (default: False)
+    - figsize: tuple, figure size in inches
+    - cmap: str, colormap ('viridis', 'plasma', 'Blues', 'Oranges', 'RdBu_r', 'publication_blue', 
+             'nature_overlap', 'science_matrix', 'cell_symmetric', 'plos_overlap')
+    - annot: bool, whether to annotate cells
+    - linewidths: float, width of lines separating cells
+    - dpi: int, resolution for saved figures (300+ recommended for publication)
+    - publication_ready: bool, apply publication-ready styling
+    
+    Advanced Styling Options:
+    - title: str, optional custom title
+    - xlabel: str, x-axis label
+    - ylabel: str, y-axis label
+    - rotation: int, x-axis label rotation angle
+    - font_scale: float, scaling factor for fonts
+    - journal_style: str, journal-specific styling ('nature', 'science', 'cell', 'plos', 'generic')
+    - data_transform: str, data transformation ('none', 'log10', 'sqrt', 'zscore', 'minmax')
+    - show_statistics: bool, overlay statistical information on the plot
+    - stat_position: str, position for statistics overlay
+    
+    Matrix-Specific Options:
+    - highlight_diagonal: bool, whether to highlight diagonal elements (species vs itself)
+    - mask_diagonal: bool, whether to mask/hide diagonal elements
+    - cluster_rows: bool, whether to cluster rows hierarchically
+    - cluster_cols: bool, whether to cluster columns hierarchically
+    - show_dendrograms: bool, whether to show clustering dendrograms
+    
+    Advanced Annotation Options:
+    - annotation_threshold: float, optional threshold for conditional cell annotations
+    - custom_annotation_func: callable, custom function for cell annotations
+    
+    Color and Layout Options:
+    - colorbar_extend: str, colorbar extension ('neither', 'both', 'min', 'max')
+    - add_colorbar_label: str, label for the colorbar
+    - robust_color_scale: bool, use robust percentiles for color scaling
+    - add_grid: bool, whether to add a subtle grid overlay
+    - grid_style: dict, grid styling options
+    - subplot_margins: dict, custom margins
+    - add_subplot_labels: bool, whether to add subplot labels (A, B, C, etc.)
+    
+    Clustering and Correlation Options:
+    - show_correlation_values: bool, display correlation coefficients
+    - correlation_method: str, correlation method ('pearson', 'spearman', 'kendall')
+    - add_significance_stars: bool, add significance indicators
+    
+    Returns:
+    - pd.DataFrame: the loaded (and optionally normalized/transformed) data
+    """
+    import seaborn as sns
+    import numpy as np
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.patches import Rectangle
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    from scipy import stats
+    from scipy.cluster.hierarchy import linkage, dendrogram
+    import matplotlib.patches as mpatches
+    
+    try:
+        # Load the species overlaps data
+        data = pd.read_csv(file_path, sep='\t', index_col=0)
+        
+        # Apply data transformations
+        data_processed = data.copy()
+        transform_label = ""
+        
+        if data_transform == 'log10':
+            data_processed = np.log10(data_processed + 1)  # Add 1 to handle zeros
+            transform_label = " (log₁₀ transformed)"
+            add_colorbar_label += " (log₁₀)"
+        elif data_transform == 'sqrt':
+            data_processed = np.sqrt(data_processed)
+            transform_label = " (√ transformed)"
+            add_colorbar_label += " (√)"
+        elif data_transform == 'zscore':
+            scaler = StandardScaler()
+            # For symmetric matrices, normalize across all values (flatten)
+            values_flat = data_processed.values.flatten()
+            values_scaled = scaler.fit_transform(values_flat.reshape(-1, 1)).flatten()
+            data_processed = pd.DataFrame(
+                values_scaled.reshape(data_processed.shape),
+                index=data_processed.index,
+                columns=data_processed.columns
+            )
+            transform_label = " (Z-score normalized)"
+            add_colorbar_label = "Z-score"
+        elif data_transform == 'minmax':
+            if normalize:  # Use existing normalize logic
+                scaler = MinMaxScaler()
+                data_processed = pd.DataFrame(
+                    scaler.fit_transform(data_processed),
+                    index=data_processed.index,
+                    columns=data_processed.columns
+                )
+            else:
+                # Apply MinMaxScaler to entire matrix for symmetric consistency
+                scaler = MinMaxScaler()
+                values_flat = data_processed.values.flatten()
+                values_scaled = scaler.fit_transform(values_flat.reshape(-1, 1)).flatten()
+                data_processed = pd.DataFrame(
+                    values_scaled.reshape(data_processed.shape),
+                    index=data_processed.index,
+                    columns=data_processed.columns
+                )
+            transform_label = " (Min-Max normalized)"
+            add_colorbar_label = "Normalized Value"
+        elif normalize and data_transform == 'none':
+            # Legacy normalization for backward compatibility
+            scaler = MinMaxScaler()
+            data_processed = pd.DataFrame(
+                scaler.fit_transform(data_processed),
+                index=data_processed.index,
+                columns=data_processed.columns
+            )
+            transform_label = " (Normalized)"
+        
+        # Journal-specific styling configurations
+        journal_configs = {
+            'nature': {
+                'font_family': 'sans-serif',
+                'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
+                'title_size': int(14 * font_scale),
+                'label_size': int(12 * font_scale),
+                'tick_size': int(10 * font_scale),
+                'cmap_default': 'Blues'
+            },
+            'science': {
+                'font_family': 'serif',
+                'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+                'title_size': int(16 * font_scale),
+                'label_size': int(14 * font_scale),
+                'tick_size': int(12 * font_scale),
+                'cmap_default': 'plasma'
+            },
+            'cell': {
+                'font_family': 'sans-serif',
+                'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
+                'title_size': int(15 * font_scale),
+                'label_size': int(13 * font_scale),
+                'tick_size': int(11 * font_scale),
+                'cmap_default': 'Oranges'
+            },
+            'plos': {
+                'font_family': 'serif',
+                'font_serif': ['Liberation Serif', 'Times New Roman', 'DejaVu Serif'],
+                'title_size': int(14 * font_scale),
+                'label_size': int(12 * font_scale),
+                'tick_size': int(10 * font_scale),
+                'cmap_default': 'viridis'
+            },
+            'generic': {
+                'font_family': 'serif',
+                'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+                'title_size': int(16 * font_scale),
+                'label_size': int(14 * font_scale),
+                'tick_size': int(12 * font_scale),
+                'cmap_default': 'viridis'
+            }
+        }
+        
+        # Set publication-ready style with journal-specific settings
+        config = journal_configs.get(journal_style, journal_configs['generic'])
+        
+        if publication_ready:
+            plt.style.use('default')
+            rcParams_config = {
+                'font.family': config['font_family'],
+                'font.size': config['tick_size'],
+                'axes.linewidth': 2.0,
+                'axes.spines.top': False,
+                'axes.spines.right': False,
+                'figure.facecolor': 'white',
+                'axes.facecolor': 'white',
+                'savefig.facecolor': 'white',
+                'savefig.edgecolor': 'none',
+                'axes.edgecolor': '#333333',
+                'axes.labelcolor': '#333333',
+                'text.color': '#333333',
+                'xtick.color': '#333333',
+                'ytick.color': '#333333',
+                'patch.linewidth': 0.8,
+                'patch.facecolor': '#348ABD',
+                'patch.edgecolor': '#FFFFFF',
+                'patch.antialiased': True
+            }
+            
+            # Add font-specific settings
+            if config['font_family'] == 'serif':
+                rcParams_config['font.serif'] = config['font_serif']
+            else:
+                rcParams_config['font.sans-serif'] = config['font_sans']
+                
+            plt.rcParams.update(rcParams_config)
+        
+        # Advanced colormap options with overlap-specific schemes
+        if cmap == 'publication_blue':
+            colors = ['#ffffff', '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6', '#2171b5', '#084594']
+            cmap = LinearSegmentedColormap.from_list('publication_blue', colors)
+        elif cmap == 'nature_overlap':
+            colors = ['#ffffff', '#f0f8ff', '#e1f4ff', '#c2e9ff', '#85d4ff', '#47bfff', '#0099ff', '#0066cc']
+            cmap = LinearSegmentedColormap.from_list('nature_overlap', colors)
+        elif cmap == 'science_matrix':
+            colors = ['#ffffff', '#fff5f0', '#fed4c4', '#fd9483', '#fc4d4d', '#dc143c', '#b22222', '#800000']
+            cmap = LinearSegmentedColormap.from_list('science_matrix', colors)
+        elif cmap == 'cell_symmetric':
+            colors = ['#ffffff', '#f0fff0', '#d4edda', '#b7e5b4', '#85c285', '#52a352', '#2d5a2d', '#1e3d1e']
+            cmap = LinearSegmentedColormap.from_list('cell_symmetric', colors)
+        elif cmap == 'plos_overlap':
+            colors = ['#ffffff', '#fff8dc', '#ffe4b5', '#ffa500', '#ff8c00', '#ff6347', '#dc143c', '#b22222']
+            cmap = LinearSegmentedColormap.from_list('plos_overlap', colors)
+        
+        # Create mask for diagonal if requested
+        mask = None
+        if mask_diagonal:
+            mask = np.eye(len(data_processed), dtype=bool)
+        
+        # Configure color scaling with advanced options
+        vmin, vmax = None, None
+        if robust_color_scale:
+            if mask_diagonal:
+                # Exclude diagonal for color scaling
+                non_diag_values = data_processed.values[~np.eye(len(data_processed), dtype=bool)]
+                vmin, vmax = np.percentile(non_diag_values, [2, 98])
+            else:
+                vmin, vmax = np.percentile(data_processed.values.flatten(), [2, 98])
+        
+        # Create figure with enhanced layout control
+        if subplot_margins is None:
+            subplot_margins = {'left': 0.15, 'right': 0.88, 'top': 0.92, 'bottom': 0.18}
+        
+        # Enhanced annotation logic
+        annot_data = None
+        if annot:
+            if custom_annotation_func:
+                annot_data = data_processed.applymap(custom_annotation_func)
+            elif annotation_threshold is not None:
+                # Conditional annotations - only show values above threshold
+                annot_data = data_processed.where(data_processed.abs() >= annotation_threshold, '')
+            else:
+                annot_data = data_processed
+        
+        # Enhanced colorbar configuration
+        colorbar_kws = {
+            'shrink': 0.85,
+            'aspect': 30,
+            'pad': 0.04,
+            'label': add_colorbar_label,
+            'extend': colorbar_extend,
+            'orientation': 'vertical',
+            'format': '%.2f' if data_transform in ['zscore', 'minmax'] or normalize else '%.0f'
+        }
+        
+        # Create the heatmap with enhanced options
+        heatmap_kwargs = {
+            'cmap': cmap,
+            'annot': annot_data if annot else False,
+            'fmt': '' if annot_data is not None else ('.2f' if data_transform in ['zscore', 'minmax'] or normalize else '.0f'),
+            'annot_kws': {'fontsize': int(9 * font_scale), 'color': '#333333', 'weight': 'bold'},
+            'linewidths': linewidths,
+            'linecolor': 'white',
+            'cbar_kws': colorbar_kws,
+            'square': True,  # Essential for symmetric overlap matrices
+            'xticklabels': True,
+            'yticklabels': True,
+            'mask': mask
+        }
+        
+        # Add clustering if requested
+        if show_dendrograms or cluster_rows or cluster_cols:
+            # Use clustermap for hierarchical clustering
+            g = sns.clustermap(
+                data_processed,
+                row_cluster=cluster_rows,
+                col_cluster=cluster_cols,
+                figsize=figsize,
+                dendrogram_ratio=0.15 if show_dendrograms else 0.0,
+                colors_ratio=0.03,
+                cmap=cmap,
+                **{k: v for k, v in heatmap_kwargs.items() if k not in ['square', 'cmap']}
+            )
+            
+            # Enhanced clustermap styling
+            plot_title = title if title else f'Species Overlap Matrix{transform_label}'
+            g.fig.suptitle(plot_title, 
+                          fontsize=config['title_size'], 
+                          fontweight='bold', 
+                          y=0.98)
+            g.ax_heatmap.set_xlabel(xlabel, fontsize=config['label_size'], labelpad=15)
+            g.ax_heatmap.set_ylabel(ylabel, fontsize=config['label_size'], labelpad=15)
+            
+            # Enhanced tick styling
+            plt.setp(g.ax_heatmap.get_xticklabels(), 
+                    rotation=rotation, ha='right', fontsize=config['tick_size'])
+            plt.setp(g.ax_heatmap.get_yticklabels(), 
+                    rotation=0, fontsize=config['tick_size'])
+            
+            # Add statistics if requested
+            if show_statistics:
+                stats_text = _create_overlap_statistics_text(data_processed, mask_diagonal)
+                _add_statistics_annotation(g.fig, stats_text, stat_position, font_scale)
+            
+            # Save the clustermap with enhanced quality
+            g.savefig(f"{save_path}.png", dpi=dpi, bbox_inches='tight', 
+                     facecolor='white', edgecolor='none')
+            g.savefig(f"{save_path}.pdf", bbox_inches='tight', 
+                     facecolor='white', edgecolor='none')
+        
+        else:
+            # Standard heatmap with advanced features
+            fig, ax = plt.subplots(figsize=figsize, facecolor='white')
+            fig.subplots_adjust(**subplot_margins)
+            
+            if vmin is not None and vmax is not None:
+                heatmap_kwargs.update({'vmin': vmin, 'vmax': vmax})
+            
+            # Create the main heatmap
+            im = sns.heatmap(data_processed, ax=ax, **heatmap_kwargs)
+            
+            # Highlight diagonal if requested and not masked
+            if highlight_diagonal and not mask_diagonal:
+                for i in range(min(data_processed.shape)):
+                    rect = Rectangle((i, i), 1, 1, fill=False, edgecolor='#FF4444', 
+                                   linewidth=3, alpha=0.9)
+                    ax.add_patch(rect)
+            
+            # Add grid overlay if requested
+            if add_grid:
+                grid_defaults = {'alpha': 0.3, 'linewidth': 0.8, 'color': '#CCCCCC'}
+                if grid_style:
+                    grid_defaults.update(grid_style)
+                ax.grid(True, **grid_defaults)
+                ax.set_axisbelow(True)
+            
+            # Enhanced title with transformation info
+            plot_title = title if title else f'Species Overlap Matrix{transform_label}'
+            ax.set_title(plot_title, fontsize=config['title_size'], 
+                        fontweight='bold', pad=30, color='#333333')
+            
+            # Enhanced axis styling
+            ax.set_xlabel(xlabel, fontsize=config['label_size'], labelpad=15, color='#333333')
+            ax.set_ylabel(ylabel, fontsize=config['label_size'], labelpad=15, color='#333333')
+            
+            # Advanced tick customization
+            ax.tick_params(
+                axis='x', 
+                rotation=rotation, 
+                labelsize=config['tick_size'],
+                pad=10,
+                colors='#333333',
+                which='major',
+                length=8,
+                width=1.5
+            )
+            ax.tick_params(
+                axis='y', 
+                rotation=0, 
+                labelsize=config['tick_size'],
+                pad=10,
+                colors='#333333',
+                which='major',
+                length=8,
+                width=1.5
+            )
+            
+            # Enhanced label alignment
+            plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline')
+            plt.setp(ax.get_yticklabels(), ha='right', va='center')
+            
+            # Add subplot labels if requested
+            if add_subplot_labels:
+                label_defaults = {
+                    'fontsize': int(18 * font_scale),
+                    'fontweight': 'bold',
+                    'color': '#333333'
+                }
+                ax.text(-0.20, 1.08, 'A', transform=ax.transAxes, **label_defaults)
+            
+            # Add statistical overlay if requested
+            if show_statistics:
+                stats_text = _create_overlap_statistics_text(data_processed, mask_diagonal)
+                _add_statistics_annotation(fig, stats_text, stat_position, font_scale)
+            
+            # Enhanced layout with better spacing
+            plt.tight_layout()
+            
+            # Save figures with publication-quality settings
+            save_kwargs = {
+                'dpi': dpi,
+                'bbox_inches': 'tight',
+                'facecolor': 'white',
+                'edgecolor': 'none',
+                'metadata': {
+                    'Title': plot_title,
+                    'Author': 'Comparative Genomics Analysis',
+                    'Subject': 'Species Overlap Matrix',
+                    'Creator': 'Python Matplotlib/Seaborn'
+                }
+            }
+            
+            plt.savefig(f"{save_path}.png", format='png', **save_kwargs)
+            plt.savefig(f"{save_path}.pdf", format='pdf', **save_kwargs)
+            
+            # Save high-resolution version for print
+            plt.savefig(f"{save_path}_print.png", format='png', dpi=600, 
+                       bbox_inches='tight', facecolor='white', edgecolor='none')
+        
+        plt.show()
+        
+        return data
+        
+    except Exception as e:
+        raise ValueError(f"Error processing species overlap data from {file_path}: {str(e)}")
+
+def _create_overlap_statistics_text(data: pd.DataFrame, mask_diagonal: bool = False) -> str:
+    """Helper function to create statistical summary text for overlap matrix overlay."""
+    stats_info = []
+    
+    # Basic statistics
+    stats_info.append(f"Species: {data.shape[0]}")
+    
+    if mask_diagonal:
+        # Exclude diagonal elements for statistics
+        mask = ~np.eye(len(data), dtype=bool)
+        values = data.values[mask]
+        stats_info.append(f"Off-diagonal range: {values.min():.0f}–{values.max():.0f}")
+        stats_info.append(f"Mean overlap: {values.mean():.1f}")
+        stats_info.append(f"Median overlap: {np.median(values):.1f}")
+    else:
+        stats_info.append(f"Range: {data.min().min():.0f}–{data.max().max():.0f}")
+        stats_info.append(f"Mean: {data.mean().mean():.1f}")
+        
+        # Calculate mean off-diagonal if symmetric
+        if data.shape[0] == data.shape[1]:
+            off_diag_mask = ~np.eye(len(data), dtype=bool)
+            off_diag_mean = data.values[off_diag_mask].mean()
+            stats_info.append(f"Off-diag mean: {off_diag_mean:.1f}")
+    
+    return "\\n".join(stats_info)
+
+def analyze_species_overlap_statistics(data: pd.DataFrame) -> dict:
+    """
+    Calculate summary statistics for species overlap data.
+    
+    Parameters:
+    - data: pd.DataFrame, species overlap matrix
+    
+    Returns:
+    - dict: summary statistics including mean, median, min, max overlaps
+    """
+    # Remove diagonal (self-overlaps) for analysis
+    mask = ~pd.DataFrame(index=data.index, columns=data.columns).eq(
+        pd.DataFrame(index=data.index, columns=data.columns).T
+    ).values
+    
+    off_diagonal_values = data.values[mask]
+    
+    stats = {
+        'mean_overlap': off_diagonal_values.mean(),
+        'median_overlap': pd.Series(off_diagonal_values).median(),
+        'min_overlap': off_diagonal_values.min(),
+        'max_overlap': off_diagonal_values.max(),
+        'std_overlap': off_diagonal_values.std(),
+        'total_species': len(data.columns)
+    }
+    
+    return stats
+```
+
+### 5.2 Species Overlap Heatmap (Non-normalized)
+
+```{python}
+# Create non-normalized species overlap heatmap
+file_path = './Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Orthogroups_SpeciesOverlaps.tsv'
+
+overlap_data = create_species_overlap_heatmap(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps",
+    normalize=False,
+    figsize=(12, 10),
+    publication_ready=True
+)
+
+# Print basic statistics
+stats = analyze_species_overlap_statistics(overlap_data)
+print("Species Overlap Statistics:")
+print(f"Total species: {stats['total_species']}")
+print(f"Mean overlap: {stats['mean_overlap']:.2f}")
+print(f"Median overlap: {stats['median_overlap']:.2f}")
+print(f"Range: {stats['min_overlap']} - {stats['max_overlap']}")
+print(f"Standard deviation: {stats['std_overlap']:.2f}")
+```
+
+### 5.3 Species Overlap Heatmap (Normalized)
+
+```{python}
+# Create normalized species overlap heatmap
+create_species_overlap_heatmap(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps_Normalized",
+    normalize=True,
+    figsize=(12, 10),
+    publication_ready=True
+)
+```
+
+## 6. Gene and Orthogroup Ratio Analysis
+
+### 6.1 Ratio Analysis Functions
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+from typing import Tuple, Optional, List
+
+def create_gene_orthogroup_ratio_plot(
+    file_path: str,
+    save_path: str,
+    plot_type: str = 'stacked_bar',
+    figsize: Tuple[int, int] = (14, 10),
+    colors: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    xlabel: str = 'Species',
+    ylabel: str = 'Counts',
+    rotation: int = 45,
+    dpi: int = 300,
+    publication_ready: bool = True
+) -> pd.DataFrame:
+    """
+    Create publication-quality plots for gene and orthogroup ratio analysis.
+    
+    Parameters:
+    - file_path: str, path to the TSV/CSV file containing ratio data
+    - save_path: str, base path to save the figure (saves as PNG and PDF)
+    - plot_type: str, type of plot ('stacked_bar', 'grouped_bar', 'line')
+    - figsize: tuple, figure size in inches
+    - colors: list, optional custom colors for the plot
+    - title: str, optional custom title
+    - xlabel: str, x-axis label
+    - ylabel: str, y-axis label
+    - rotation: int, x-axis label rotation angle
+    - dpi: int, resolution for saved figures
+    - publication_ready: bool, apply publication-ready styling
+    
+    Returns:
+    - pd.DataFrame: the loaded and processed data
+    """
+    try:
+        # Load the data using the original working approach
+        # Note: Despite .tsv extension, this file uses comma separators
+        data = pd.read_csv(file_path, sep=',', index_col=0)
+        
+        # Transpose to have species as index and statistics as columns (original approach)
+        data_transposed = data.T
+        
+        # Validate that we have data to plot
+        if data_transposed.empty:
+            raise ValueError(f"No data found in {file_path}")
+        
+        print(f"Data loaded successfully:")
+        print(f"  - Shape: {data_transposed.shape}")
+        print(f"  - Species: {list(data_transposed.index)}")
+        print(f"  - Statistics: {list(data_transposed.columns)}")
+        
+        # Set publication-ready style
+        if publication_ready:
+            plt.style.use('default')
+            plt.rcParams.update({
+                'font.family': 'serif',
+                'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+                'font.size': 12,
+                'axes.linewidth': 1.2,
+                'figure.facecolor': 'white'
+            })
+        
+        # Set default colors if none provided
+        if colors is None:
+            # Use a professional color palette
+            colors = ['#2E4057', '#048A81', '#54C6EB', '#F18F01', '#C73E1D', '#A8DADC', '#457B9D']
+        
+        # Create the plot
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        if plot_type == 'stacked_bar':
+            data_transposed.plot(
+                kind='bar', 
+                stacked=True, 
+                ax=ax, 
+                color=colors[:len(data_transposed.columns)],
+                alpha=0.8,
+                edgecolor='white',
+                linewidth=0.8
+            )
+        elif plot_type == 'grouped_bar':
+            data_transposed.plot(
+                kind='bar', 
+                ax=ax, 
+                color=colors[:len(data_transposed.columns)],
+                alpha=0.8,
+                edgecolor='white',
+                linewidth=0.8
+            )
+        elif plot_type == 'line':
+            for i, column in enumerate(data_transposed.columns):
+                ax.plot(
+                    range(len(data_transposed.index)),
+                    data_transposed[column].values,
+                    marker='o',
+                    linewidth=2,
+                    markersize=6,
+                    color=colors[i % len(colors)],
+                    label=column
+                )
+            ax.set_xticks(range(len(data_transposed.index)))
+            ax.set_xticklabels(data_transposed.index)
+        
+        # Set title
+        if title is None:
+            if plot_type == 'stacked_bar':
+                title = 'Gene and Orthogroup Counts per Species (Stacked)'
+            elif plot_type == 'grouped_bar':
+                title = 'Gene and Orthogroup Counts per Species (Grouped)'
+            else:
+                title = 'Gene and Orthogroup Trends per Species'
+        
+        # Styling
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel(xlabel, fontsize=14)
+        ax.set_ylabel(ylabel, fontsize=14)
+        ax.tick_params(axis='x', rotation=rotation, labelsize=12)
+        ax.tick_params(axis='y', labelsize=12)
+        
+        # Enhance legend
+        legend = ax.legend(
+            title='Metrics',
+            title_fontsize=12,
+            fontsize=11,
+            bbox_to_anchor=(1.05, 1),
+            loc='upper left',
+            frameon=True,
+            fancybox=True,
+            shadow=True
+        )
+        legend.get_frame().set_facecolor('white')
+        legend.get_frame().set_alpha(0.9)
+        
+        # Add grid for better readability
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.set_axisbelow(True)
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save figures
+        plt.savefig(f"{save_path}.png", dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.savefig(f"{save_path}.pdf", bbox_inches='tight', facecolor='white')
+        plt.show()
+        
+        return data
+        
+    except Exception as e:
+        raise ValueError(f"Error processing ratio data from {file_path}: {str(e)}")
+
+def calculate_ratio_statistics(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate statistical summaries for gene and orthogroup ratio data.
+    
+    Parameters:
+    - data: pd.DataFrame, ratio data with species as index and metrics as columns
+    
+    Returns:
+    - pd.DataFrame: summary statistics including mean, std, min, max for each metric
+    """
+    stats_summary = data.describe().T
+    
+    # Add coefficient of variation
+    stats_summary['cv'] = (stats_summary['std'] / stats_summary['mean']) * 100
+    
+    # Round for better readability
+    stats_summary = stats_summary.round(2)
+    
+    return stats_summary
+
+def create_comparative_ratio_plot(
+    data: pd.DataFrame,
+    save_path: str,
+    figsize: Tuple[int, int] = (14, 8),
+    publication_ready: bool = True
+) -> None:
+    """
+    Create a comparative plot showing ratios between different metrics.
+    
+    Parameters:
+    - data: pd.DataFrame, ratio data with species as index
+    - save_path: str, base path to save the figure
+    - figsize: tuple, figure size in inches
+    - publication_ready: bool, apply publication-ready styling
+    """
+    # Set publication-ready style
+    if publication_ready:
+        plt.style.use('default')
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+            'font.size': 12,
+            'axes.linewidth': 1.2,
+            'figure.facecolor': 'white'
+        })
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Find appropriate columns for genes and orthogroups
+    gene_cols = [col for col in data.columns if 'gene' in col.lower()]
+    ortho_cols = [col for col in data.columns if 'orthogroup' in col.lower()]
+    
+    # Use the most relevant columns
+    gene_col = None
+    ortho_col = None
+    
+    # Prioritize exact matches
+    for col in gene_cols:
+        if 'Number of genes' == col:
+            gene_col = col
+            break
+    if not gene_col and gene_cols:
+        gene_col = gene_cols[0]  # Use first available gene column
+        
+    for col in ortho_cols:
+        if 'orthogroups containing species' in col.lower():
+            ortho_col = col
+            break
+    if not ortho_col and ortho_cols:
+        ortho_col = ortho_cols[0]  # Use first available orthogroup column
+    
+    # Plot 1: Genes vs Orthogroups scatter (if both columns available)
+    if gene_col and ortho_col:
+        ax1.scatter(
+            data[gene_col], 
+            data[ortho_col],
+            s=120, alpha=0.7, c='#2E4057', edgecolors='white', linewidth=1.5
+        )
+        
+        # Add species labels
+        for i, species in enumerate(data.index):
+            ax1.annotate(
+                species, 
+                (data[gene_col].iloc[i], data[ortho_col].iloc[i]),
+                xytext=(8, 8), textcoords='offset points', fontsize=10, alpha=0.8,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+            )
+        
+        ax1.set_xlabel(gene_col, fontsize=12)
+        ax1.set_ylabel(ortho_col, fontsize=12)
+        ax1.set_title('Genes vs Orthogroups Containing Species', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        
+        # Calculate and display correlation
+        correlation = data[gene_col].corr(data[ortho_col])
+        ax1.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
+                transform=ax1.transAxes, fontsize=11,
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    else:
+        # Fallback: show top statistics
+        top_stats = data.iloc[:, :2] if len(data.columns) >= 2 else data.iloc[:, :1]
+        ax1.bar(range(len(data.index)), top_stats.iloc[:, 0], 
+               color='#2E4057', alpha=0.8, edgecolor='white', linewidth=1)
+        ax1.set_title('Primary Statistic by Species', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Species', fontsize=12)
+        ax1.set_ylabel(top_stats.columns[0], fontsize=12)
+        ax1.set_xticks(range(len(data.index)))
+        ax1.set_xticklabels(data.index, rotation=45, ha='right')
+    
+    # Plot 2: Gene/Orthogroup ratio bar plot
+    if gene_col and ortho_col:
+        ratio = data[gene_col] / data[ortho_col]
+        
+        bars = ax2.bar(range(len(ratio)), ratio.values, 
+                      color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
+        
+        ax2.set_xlabel('Species', fontsize=12)
+        ax2.set_ylabel('Gene/Orthogroup Ratio', fontsize=12)
+        ax2.set_title('Gene to Orthogroup Ratio', fontsize=14, fontweight='bold')
+        ax2.set_xticks(range(len(ratio)))
+        ax2.set_xticklabels(data.index, rotation=45, ha='right')
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels on bars
+        for i, (bar, value) in enumerate(zip(bars, ratio.values)):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(ratio)*0.02,
+                    f'{value:.1f}', ha='center', va='bottom', fontsize=10)
+    else:
+        # Fallback: show distribution of a key statistic
+        if len(data.columns) > 0:
+            stat_col = data.columns[0]
+            bars = ax2.bar(range(len(data.index)), data[stat_col].values,
+                          color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
+            ax2.set_xlabel('Species', fontsize=12)
+            ax2.set_ylabel(stat_col, fontsize=12)
+            ax2.set_title(f'{stat_col} by Species', fontsize=14, fontweight='bold')
+            ax2.set_xticks(range(len(data.index)))
+            ax2.set_xticklabels(data.index, rotation=45, ha='right')
+            ax2.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig(f"{save_path}_comparative.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{save_path}_comparative.pdf", bbox_inches='tight')
+    plt.show()
+```
+
+### 6.2 Data Overview
+
+```{python}
+!head -n 15 ./Notebooks/Tables/orthologs-ratio.tsv
+```
+
+### 6.3 Stacked Bar Plot Analysis
+
+```{python}
+# Create publication-ready stacked bar plot
+file_path = './Notebooks/Tables/orthologs-ratio.tsv'
+
+ratio_data = create_gene_orthogroup_ratio_plot(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/orthologs-ratio",
+    plot_type='stacked_bar',
+    figsize=(16, 10),
+    title='Gene and Orthogroup Counts per Species',
+    publication_ready=True
+)
+
+# Display summary statistics
+stats_summary = calculate_ratio_statistics(ratio_data)
+print("\nRatio Analysis Summary Statistics:")
+print(stats_summary)
+```
+
+### 6.4 Grouped Bar Plot Analysis
+
+```{python}
+# Create grouped bar plot for better comparison
+create_gene_orthogroup_ratio_plot(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/orthologs-ratio-grouped",
+    plot_type='grouped_bar',
+    figsize=(16, 10),
+    title='Gene and Orthogroup Counts per Species (Grouped)',
+    publication_ready=True
+)
+```
+
+### 6.5 Comparative Analysis
+
+```{python}
+# Create comparative analysis plots
+create_comparative_ratio_plot(
+    data=ratio_data,
+    save_path="./Notebooks/Figures/orthologs-ratio",
+    figsize=(16, 8),
+    publication_ready=True
+)
+```
+
+## 7. Duplication Analysis
+
+### 7.1 Duplication Statistics Functions
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_duplications_histogram(tsv_file_path, save_path=None):
+    """Plot histograms for duplication statistics.
+    
+    Parameters:
+    - tsv_file_path: str, path to the TSV file containing duplication data.
+    - save_path: str, optional, base path to save the figure (saves as PNG and PDF)
+    """
+    # Load the TSV file into a pandas DataFrame
+    df = pd.read_csv(tsv_file_path, sep='\t')
+
+    # Plot histogram for "Duplications (all)" and "Duplications (50% support)"
+    plt.figure(figsize=(14, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.hist(df['Duplications (all)'], bins=100, color='blue', alpha=0.7, edgecolor='black')
+    plt.title('Histogram of Duplications (all)')
+    plt.xlabel('Number of Duplications')
+    plt.ylabel('Frequency')
+
+    plt.subplot(1, 2, 2)
+    plt.hist(df['Duplications (50% support)'], bins=100, color='green', alpha=0.7, edgecolor='black')
+    plt.title('Histogram of Duplications (50% support)')
+    plt.xlabel('Number of Duplications')
+    plt.ylabel('Frequency')
+
+    # Save the plot if path provided
+    if save_path:
+        plt.savefig(f"{save_path}.png")
+        plt.savefig(f"{save_path}.pdf")
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_duplications_box_and_violin(tsv_file_path, save_path=None):
+    """Plot box and violin plots for duplication statistics.
+    
+    Parameters:
+    - tsv_file_path: str, path to the TSV file containing duplication data.
+    - save_path: str, optional, base path to save the figure (saves as PNG and PDF)
+    """
+    # Load the TSV file into a pandas DataFrame
+    df = pd.read_csv(tsv_file_path, sep='\t')
+
+    # Set up the matplotlib figure
+    plt.figure(figsize=(14, 6))
+
+    # Box plot
+    plt.subplot(1, 2, 1)
+    sns.boxplot(data=df[['Duplications (all)', 'Duplications (50% support)']])
+    plt.title('Box Plot of Duplications')
+    plt.ylabel('Number of Duplications')
+
+    # Violin plot
+    plt.subplot(1, 2, 2)
+    sns.violinplot(data=df[['Duplications (all)', 'Duplications (50% support)']])
+    plt.title('Violin Plot of Duplications')
+    plt.ylabel('Number of Duplications')
+
+    # Save the plot if path provided
+    if save_path:
+        plt.savefig(f"{save_path}.png")
+        plt.savefig(f"{save_path}.pdf")
+    
+    plt.tight_layout()
+    plt.show()
+```
+
+### 7.2 Duplication Analysis Plots
+
+#### Histogram Analysis
+```{python}
+plot_duplications_histogram('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path="./Notebooks/Figures/duplications_histogram")
+```
+
+#### Box and Violin Plot Analysis
+```{python}
+plot_duplications_box_and_violin('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path="./Notebooks/Figures/duplications_box_violin")
+```
+
+## 8. UpSet Plot Analysis
+
+### 8.1 UpSet Plot Analysis Functions
+
+```{python}
+import pandas as pd
+from upsetplot import from_indicators, UpSet
+from matplotlib import pyplot as plt
+from typing import Optional, Tuple, Union
+
+def create_publication_upset_plot(
+    file_path: str,
+    save_path: str,
+    min_subset_size: Optional[int] = None,
+    max_degree: Optional[int] = None,
+    figsize: Tuple[int, int] = (14, 10),
+    subset_size: str = 'count',
+    show_counts: bool = True,
+    sort_by: str = 'cardinality',
+    sort_categories_by: str = 'cardinality',
+    title: Optional[str] = None,
+    dpi: int = 300,
+    publication_ready: bool = True
+) -> Tuple[pd.Series, pd.DataFrame]:
+    """
+    Create publication-quality UpSet plots for orthogroup intersection analysis.
+    
+    Parameters:
+    - file_path: str, path to the TSV file containing one-hot encoded orthogroup data
+    - save_path: str, base path to save the figure (saves as PNG and PDF)
+    - min_subset_size: int, optional, minimum subset size to display
+    - max_degree: int, optional, maximum degree of intersections to show
+    - figsize: tuple, figure size in inches
+    - subset_size: str, how to size subsets ('count', 'log', etc.)
+    - show_counts: bool, whether to show intersection counts
+    - sort_by: str, how to sort intersections ('cardinality', 'degree')
+    - sort_categories_by: str, how to sort categories
+    - title: str, optional custom title
+    - dpi: int, resolution for saved figures
+    - publication_ready: bool, apply publication-ready styling
+    
+    Returns:
+    - tuple: (combination_counts, original_data)
+    """
+    try:
+        # Load the one-hot encoded orthogroups data
+        data = pd.read_csv(file_path, sep='\t', index_col='Orthogroup')
+        
+        # Convert data to boolean
+        data_bool = data.astype(bool)
+        
+        # Reset index to exclude 'Orthogroup' from the value_counts()
+        data_bool_reset = data_bool.reset_index(drop=True)
+        
+        # Get the counts of each unique combination
+        combination_counts = from_indicators(data_bool_reset, data=data_bool_reset.index)
+        
+        # Set publication-ready style
+        if publication_ready:
+            plt.style.use('default')
+            plt.rcParams.update({
+                'font.family': 'serif',
+                'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+                'font.size': 12,
+                'axes.linewidth': 1.2,
+                'figure.facecolor': 'white'
+            })
+        
+        # Create UpSet plot with specified parameters
+        upset_params = {
+            'subset_size': subset_size,
+            'show_counts': show_counts,
+            'sort_by': sort_by,
+            'sort_categories_by': sort_categories_by,
+            'element_size': None,  # Let UpSet determine automatically
+            'intersection_plot_elements': 10 if min_subset_size is None else min(10, len(combination_counts))
+        }
+        
+        # Add filtering parameters if specified
+        if min_subset_size is not None:
+            upset_params['min_subset_size'] = min_subset_size
+        
+        if max_degree is not None:
+            upset_params['max_degree'] = max_degree
+        
+        # Create the UpSet plot
+        fig = plt.figure(figsize=figsize)
+        upset = UpSet(combination_counts, **upset_params)
+        upset.plot(fig=fig)
+        
+        # Set title
+        if title is None:
+            filter_desc = []
+            if min_subset_size is not None:
+                filter_desc.append(f"Min Size {min_subset_size}")
+            if max_degree is not None:
+                filter_desc.append(f"Max Degree {max_degree}")
+            
+            if filter_desc:
+                title = f'UpSet Plot of Orthogroups ({", ".join(filter_desc)})'
+            else:
+                title = 'UpSet Plot of Orthogroups (All Sets)'
+        
+        # Add title
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save figures
+        plt.savefig(f"{save_path}.png", dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.savefig(f"{save_path}.pdf", bbox_inches='tight', facecolor='white')
+        plt.show()
+        
+        return combination_counts, data
+        
+    except Exception as e:
+        raise ValueError(f"Error creating UpSet plot from {file_path}: {str(e)}")
+
+def analyze_upset_statistics(
+    combination_counts: pd.Series,
+    original_data: pd.DataFrame
+) -> dict:
+    """
+    Calculate summary statistics for UpSet plot data.
+    
+    Parameters:
+    - combination_counts: pd.Series, intersection counts from UpSet analysis
+    - original_data: pd.DataFrame, original one-hot encoded data
+    
+    Returns:
+    - dict: summary statistics including intersection info, species coverage, etc.
+    """
+    stats = {
+        'total_orthogroups': len(original_data),
+        'total_species': len(original_data.columns),
+        'total_intersections': len(combination_counts),
+        'largest_intersection': combination_counts.max(),
+        'smallest_intersection': combination_counts.min(),
+        'mean_intersection_size': combination_counts.mean(),
+        'median_intersection_size': combination_counts.median(),
+        'species_names': list(original_data.columns),
+        'species_totals': original_data.sum().to_dict()
+    }
+    
+    # Calculate degree distribution
+    degree_counts = {}
+    for idx, count in combination_counts.items():
+        degree = sum(idx)  # Number of species in intersection
+        if degree not in degree_counts:
+            degree_counts[degree] = 0
+        degree_counts[degree] += count
+    
+    stats['degree_distribution'] = degree_counts
+    
+    return stats
+
+def create_upset_summary_plot(
+    stats: dict,
+    save_path: str,
+    figsize: Tuple[int, int] = (14, 8),
+    publication_ready: bool = True
+) -> None:
+    """
+    Create summary plots for UpSet analysis statistics.
+    
+    Parameters:
+    - stats: dict, statistics from analyze_upset_statistics
+    - save_path: str, base path to save the figure
+    - figsize: tuple, figure size in inches
+    - publication_ready: bool, apply publication-ready styling
+    """
+    # Set publication-ready style
+    if publication_ready:
+        plt.style.use('default')
+        plt.rcParams.update({
+            'font.family': 'serif',
+            'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+            'font.size': 12,
+            'axes.linewidth': 1.2,
+            'figure.facecolor': 'white'
+        })
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Plot 1: Species totals
+    species_names = list(stats['species_totals'].keys())
+    species_counts = list(stats['species_totals'].values())
+    
+    bars1 = ax1.bar(range(len(species_names)), species_counts, 
+                   color='#2E4057', alpha=0.8, edgecolor='white', linewidth=1)
+    ax1.set_title('Orthogroups per Species', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Species', fontsize=12)
+    ax1.set_ylabel('Number of Orthogroups', fontsize=12)
+    ax1.set_xticks(range(len(species_names)))
+    ax1.set_xticklabels(species_names, rotation=45, ha='right')
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, count in zip(bars1, species_counts):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(species_counts)*0.01,
+                str(count), ha='center', va='bottom', fontsize=10)
+    
+    # Plot 2: Degree distribution
+    degrees = list(stats['degree_distribution'].keys())
+    degree_counts = list(stats['degree_distribution'].values())
+    
+    bars2 = ax2.bar(degrees, degree_counts, 
+                   color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
+    ax2.set_title('Intersection Degree Distribution', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Intersection Degree (Number of Species)', fontsize=12)
+    ax2.set_ylabel('Number of Orthogroups', fontsize=12)
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, count in zip(bars2, degree_counts):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(degree_counts)*0.01,
+                str(count), ha='center', va='bottom', fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig(f"{save_path}_summary.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{save_path}_summary.pdf", bbox_inches='tight')
+    plt.show()
+```
+
+### 8.2 Full Set UpSet Plot
+
+```{python}
+# Create comprehensive UpSet plot with all intersections
+file_path = './Notebooks/Tables/one-hot-orthogroups-geen-count.tsv'
+
+combination_counts, original_data = create_publication_upset_plot(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/upset_plot",
+    min_subset_size=None,
+    # figsize=(16, 12),
+    figsize=(20, 12),
+    title='UpSet Plot of Orthogroups (All Sets)',
+    publication_ready=True
+)
+
+# Analyze and display statistics
+stats = analyze_upset_statistics(combination_counts, original_data)
+print("UpSet Plot Analysis Statistics:")
+print(f"Total orthogroups: {stats['total_orthogroups']}")
+print(f"Total species: {stats['total_species']}")
+print(f"Total intersections: {stats['total_intersections']}")
+print(f"Largest intersection: {stats['largest_intersection']}")
+print(f"Mean intersection size: {stats['mean_intersection_size']:.1f}")
+print(f"Median intersection size: {stats['median_intersection_size']:.1f}")
+```
+
+### 8.3 Filtered Set UpSet Plot
+
+```{python}
+# Create filtered UpSet plot (minimum subset size of 50)
+create_publication_upset_plot(
+    file_path=file_path,
+    save_path="./Notebooks/Figures/upset_plot_filtered",
+    min_subset_size=50,
+    # figsize=(16, 12),
+    figsize=(45, 15),
+    title='UpSet Plot of Orthogroups (Filtered: Min Size 50)',
+    publication_ready=True
+)
+```
+
+### 8.4 UpSet Analysis Summary
+
+```{python}
+# Create summary plots for UpSet analysis
+create_upset_summary_plot(
+    stats=stats,
+    save_path="./Notebooks/Figures/upset_plot",
+    figsize=(16, 8),
+    publication_ready=True
+)
+
+# Display degree distribution details
+print("\nDegree Distribution (Species intersection patterns):")
+for degree, count in sorted(stats['degree_distribution'].items()):
+    print(f"  {degree} species: {count} orthogroups")
+
+print(f"\nSpecies Coverage:")
+for species, count in stats['species_totals'].items():
+    coverage = (count / stats['total_orthogroups']) * 100
+    print(f"  {species}: {count} orthogroups ({coverage:.1f}%)")
+```
+
+## Summary and Insights
+
+### Visualization Suite Overview
+
+This comprehensive visualization analysis provides:
+
+1. **Phylogenetic Analysis**: Species trees with branch lengths and gene duplication events
+2. **Individual Analysis**: Detailed orthogroup-specific visualizations  
+3. **Comparative Analysis**: Heatmaps highlighting species-specific patterns
+4. **Statistical Analysis**: Distribution plots for duplication events
+5. **Set Analysis**: UpSet plots showing orthogroup intersections across species
+
+### Key Findings Visualized
+
+- **Species Relationships**: Phylogenetic trees reveal evolutionary distances and gene duplication patterns
+- **Aspiorhynchus_laticeps Patterns**: Species shows unique gene expansion and contraction patterns
+- **Orthogroup Distribution**: Variance-based filtering reveals most variable gene families
+- **Species Overlaps**: Heatmaps show which species share the most orthogroups
+- **Set Intersections**: UpSet plots reveal complex patterns of gene presence/absence
+
+`★ Insight ─────────────────────────────────────`
+This ultimate visualization suite demonstrates the power of multi-modal visualization in comparative genomics. By combining phylogenetic trees, heatmaps, statistical plots, and set visualizations, we can identify species-specific gene expansions, evolutionary relationships, and functional patterns that would be invisible in any single visualization type. The progression from individual orthogroup analysis to genome-wide patterns provides multiple scales of biological insight.
+`─────────────────────────────────────────────────`
+
+The comprehensive visualization framework established here can be adapted for any comparative genomics dataset, providing a complete analytical pipeline from raw OrthoFinder outputs to publication-ready figures.

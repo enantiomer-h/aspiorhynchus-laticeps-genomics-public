@@ -1,0 +1,2 @@
+ID	Description	GeneRatio	BgRatio	pvalue	p.adjust	qvalue	geneID	Count
+ko04214	Apoptosis - fly	5/182	47/16222	0.000176169794973236	0.000176169794973236	0.0387573548941119	evm.model.ctg2493.362/evm.model.ctg3337.140/evm.model.ctg3322.117/evm.model.ctg1757.105/evm.model.ctg3600.175	5

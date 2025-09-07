@@ -1,0 +1,31 @@
+version: "4.0"
+services:
+  gpu-jupyter:
+    container_name: gpu-jupyter
+    build: .build
+    # image: my_gpu_jupyter # For using images from other serve, replace my_gpu_jupyter into [images name] than run `docker-compose up -d`
+
+    # Set hardware limits: one GPU, max. 512GB RAM, max. 96 CPUs.
+    deploy:
+      resources:
+        limits:
+          cpus: "10.0"
+          memory: 12G
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               capabilities: [gpu]
+#               device_ids: ["0"]
+
+    network_mode: host
+    # ports:
+    #   - 38888:38888
+    volumes:
+      - ${PWD}:/home/jovyan
+    environment:
+      GRANT_SUDO: "yes"
+      NB_UID: "1052"
+      NB_GID: "1052"
+    user:
+      "root"
+    # restart: always

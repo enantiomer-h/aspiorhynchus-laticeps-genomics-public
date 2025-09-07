@@ -1,0 +1,307 @@
+---
+title: Ultimate Environment Construction Guide
+subtitle: Complete setup for comparative genomics analysis
+jupyter: python3
+---
+
+## Info Summary
+
+This is the comprehensive environment setup guide for the comparative genomics analysis project. It provides step-by-step instructions for setting up all required bioinformatics tools and dependencies.
+
+### Project Information
+- **Docker Image**: `huang/comparative-genomics:ultimate` (after complete setup)
+- **Jupyter Access**: `http://localhost:38888/?token=[your-token]`
+
+### Available Conda Environments
+After completing this setup, you will have the following environments:
+- `base` - Base conda environment  
+- `env_biopython` - Python environment with BioPython and analysis libraries
+- `env_orthofinder` - OrthoFinder for orthology analysis
+- `bioconductor-clusterprofiler_env` - R environment for functional enrichment analysis
+- `eggnog_env` - EggNOG mapper for functional annotation
+- `pastml_env` - PastML for ancestral state reconstruction  
+- `gff2bed_env` - BEDOPS utilities for format conversion
+
+### Available Jupyter Kernels
+- `env_biopython` - Python (Biopython) kernel
+- `ir` - Base R kernel
+- `julia-1.7` - Julia kernel
+- `python3` - Base Python kernel
+- `ir_clusterprofiler_481_env` - clusterprofiler R kernel
+
+## Environment List Check
+
+First, let's check the current environment setup:
+
+```{python}
+!hostname
+!mamba env list
+!jupyter kernelspec list
+```
+
+## 1. Install OrthoFinder (3.0.1b1)
+
+OrthoFinder is used for phylogenetic orthology inference and comparative genomics analysis.
+
+```{python}
+!mamba create -n env_orthofinder -y bioconda::orthofinder
+```
+
+Verify the installation:
+
+```{python}
+!conda run -n env_orthofinder orthofinder -h
+```
+
+## 2. Install Biopython Environment
+
+Set up the main Python environment for bioinformatics analysis.
+
+### 2.1 Create Base Environment (1.85)
+
+```{python}
+%%bash
+mamba create -n env_biopython -y conda-forge::biopython pip ipykernel
+conda run -n env_biopython python -m ipykernel install --user --name env_biopython --display-name "Python (Biopython)"
+```
+
+### 2.2 Install GFF Utilities (0.13)
+
+```{python}
+!mamba install -n env_biopython -y bioconda::gffutils
+```
+
+### 2.3 Install Data Analysis Libraries
+
+Install essential Python libraries for data manipulation and visualization:
+
+```{python}
+!mamba install -y -n env_biopython matplotlib
+```
+
+> 3.10.0
+
+```{python}
+!mamba install -y -n env_biopython pandas
+```
+
+> 2.2.3
+
+```{python}
+!mamba install -y -n env_biopython seaborn
+```
+
+> 0.13.2
+
+```{python}
+!mamba install -y -n env_biopython scikit-learn
+```
+
+### 2.4 Install Specialized Plotting Libraries (0.9.0)
+
+```{python}
+!mamba install -y -n env_biopython conda-forge::upsetplot
+```
+
+## 3. Install clusterProfiler (R Environment)
+
+clusterProfiler is used for functional enrichment analysis of gene clusters.
+
+### 3.1 Search Available Versions
+
+```{python}
+!mamba search bioconda::bioconductor-clusterprofiler 
+```
+
+### 3.2 Create clusterProfiler Environment
+
+```{python}
+!mamba create --name bioconductor-clusterprofiler_env -y bioconda::bioconductor-clusterprofiler=4.8.1
+```
+
+### 3.3 Install R Jupyter Kernel (1.3.2)
+
+```{python}
+!/opt/conda/envs/bioconductor-clusterprofiler_env/bin/Rscript -e "install.packages('IRkernel', repos = 'https://ftp.yz.yamagata-u.ac.jp/pub/cran/')"
+```
+
+```{python}
+%%bash
+/opt/conda/envs/bioconductor-clusterprofiler_env/bin/Rscript - <<EOF
+library(IRkernel)
+packageVersion("IRkernel")
+EOF
+```
+
+### 3.4 Register Kernel and Verify
+
+```{python}
+!/opt/conda/envs/bioconductor-clusterprofiler_env/bin/Rscript -e "IRkernel::installspec(name = 'ir_clusterprofiler_481_env', displayname = 'clusterprofiler R', user = FALSE)"
+!jupyter kernelspec list
+```
+
+### 3.5 Install tools for plotting
+```{r}
+install.packages("phytools",repos="https://cloud.r-project.org",quiet=TRUE)
+```
+
+> also installing the dependencies ‘iterators’, ‘quadprog’, ‘maps’, ‘clusterGeneration’, ‘coda’, ‘combinat’, ‘DEoptim’, ‘doParallel’, ‘expm’, ‘foreach’, ‘mnormt’, ‘numDeriv’, ‘optimParallel’, ‘phangorn’, ‘scatterplot3d’
+
+## 4. Install EggNOG Mapper
+
+EggNOG mapper provides functional annotation of genes and proteins.
+
+### 4.1 Create Environment (2.1.12)
+
+```{python}
+!mamba create -n eggnog_env -y -c bioconda -c conda-forge eggnog-mapper
+```
+
+### 4.2 Download EggNOG Database (5.0.2)
+
+```{python}
+!mkdir -p "./DB/Eggnog"
+%conda run -n eggnog_env download_eggnog_data.py -y --data_dir "./DB/Eggnog"
+```
+
+## 5. Install PastML
+
+PastML is used for ancestral state reconstruction on phylogenetic trees.
+
+### 5.1 Create Python Environment
+
+```{python}
+print("Installing PastML...")
+!mamba create -n pastml_env -y python=3.10
+```
+
+```{python}
+!conda run -n pastml_env python3 --version
+```
+
+### 5.2 Install PastML via pip (1.9.50)
+
+```{python}
+!conda run -n pastml_env python3 -m pip install pastml
+```
+
+### 5.3 Verify Installation
+
+```{python}
+!conda run -n pastml_env which pastml
+```
+
+### 5.4 Clone PastML Repository for Examples
+
+```{python}
+!ls Apps
+```
+
+```{python}
+!git clone https://github.com/evolbioinfo/pastml.git Apps/PastML
+```
+
+### 5.5 Test PastML with Example Data
+
+```{python}
+!conda run -n pastml_env pastml --tree ./Apps/PastML/examples/Albania/data/Albanian.tree.152tax.tre --data ./Apps/PastML/examples/Albania/data/data.txt --columns Country --html_compressed ./Test/Albanian_map.html --data_sep , 
+```
+
+## 6. Install MCScanX
+
+MCScanX is used for synteny and collinearity analysis.
+
+### 6.1 Install Java Dependency
+
+```{python}
+!mamba install -y conda-forge::openjdk
+```
+
+### 6.2 Download MCScanX Source
+
+```{bash}
+%%bash
+ls ./Apps
+mkdir -p ./Apps/MCScanX
+wget https://github.com/wyp1125/MCScanX/archive/refs/tags/v1.0.0.tar.gz -O ./Apps/MCScanX/v1.0.0.tar.gz
+```
+
+### 6.3 Compile MCScanX
+
+```{bash}
+%%bash
+mkdir ./Apps/MCScanX/V1
+tar zxvf ./Apps/MCScanX/v1.0.0.tar.gz -C ./Apps/MCScanX/V1
+cd ./Apps/MCScanX/V1/MCScanX-1.0.0; make
+```
+
+### 6.4 Verify Installation
+
+```{bash}
+%%bash
+ls -lth ./Apps/MCScanX/V1/MCScanX-1.0.0
+ls -lth ./Apps/MCScanX/V1/MCScanX-1.0.0/downstream_analyses
+```
+
+### 6.5 Test MCScanX Tools
+
+```{python}
+!./Apps/MCScanX/V1/MCScanX-1.0.0/duplicate_gene_classifier -h
+```
+
+## 7. Install BLAST+
+
+BLAST+ is used for sequence similarity searches.
+
+### 7.1 Download and Install BLAST+
+
+```{python}
+!mkdir -p ./Apps/Blast
+!wget https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.16.0/ncbi-blast-2.16.0+-x64-linux.tar.gz -O ./Apps/Blast/blast-2.16.0.tar.gz
+!tar zxvf ./Apps/Blast/blast-2.16.0.tar.gz -C ./Apps/Blast
+!ls ./Apps/Blast/ncbi-blast-2.16.0+/bin/
+```
+
+## 8. Install BEDOPS (gff2bed)
+
+BEDOPS provides utilities for genomic interval operations and format conversion.
+
+### 8.1 Create BEDOPS Environment
+
+```{python}
+!mamba create -n gff2bed_env -y bioconda::bedops
+```
+
+### 8.2 Verify Installation
+
+```{python}
+!conda run -n gff2bed_env which gff2bed
+```
+
+## Installation Complete
+
+Your comparative genomics analysis environment is now fully configured with all necessary tools:
+
+### Core Analysis Tools
+- **OrthoFinder**: Orthology inference and comparative genomics
+- **MCScanX**: Synteny and collinearity analysis  
+- **BLAST+**: Sequence similarity searches
+- **PastML**: Ancestral state reconstruction
+
+### Functional Annotation
+- **EggNOG Mapper**: Gene/protein functional annotation
+- **clusterProfiler**: Functional enrichment analysis (R)
+
+### Data Processing & Visualization
+- **BioPython**: Python bioinformatics libraries
+- **Pandas, NumPy**: Data manipulation
+- **Matplotlib, Seaborn**: Visualization
+- **UpSetPlot**: Set intersection visualization
+- **BEDOPS**: Genomic interval operations
+
+### Development Environment
+- **Jupyter Lab/Notebook**: Interactive analysis
+- **Multiple kernels**: Python, R, Julia support
+- **Conda environments**: Isolated tool dependencies
+
+You can now proceed with your comparative genomics analysis workflows using these properly configured environments.

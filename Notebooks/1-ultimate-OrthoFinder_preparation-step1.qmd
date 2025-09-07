@@ -1,0 +1,428 @@
+---
+title: "Ultimate OrthoFinder Preparation - Step 1: Protein Sequence Extraction"
+format: html
+jupyter:
+  kernelspec:
+    display_name: Python (Biopython)
+    language: python
+    name: env_biopython
+---
+
+# OrthoFinder Preparation - Step 1: Protein Sequence Extraction
+
+This notebook provides a comprehensive workflow for extracting protein sequences (FAA files) from genomic sequences (FNA files) and their corresponding annotation files (GFF3 files). This is a crucial preparatory step for OrthoFinder comparative genomics analysis.
+
+## Overview
+
+**Purpose**: Convert genomic sequences and annotations into protein sequences suitable for OrthoFinder analysis.
+
+**Input Files**:
+- FNA files: Genomic sequences in FASTA format
+- GFF3 files: Gene annotations with CDS features
+
+**Output Files**:
+- FAA files: Protein sequences translated from CDS annotations
+
+## Requirements and Setup
+
+```{python}
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+import gffutils
+from multiprocessing import Pool
+import os
+import sys
+from pathlib import Path
+import logging
+
+# Setup logging for better error tracking
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+```
+
+## Core Function: Protein Extraction
+
+```{python}
+def extract_proteins(fna_file, gff_file, faa_output, genetic_code=11, verbose=True):
+    """
+    Extract protein sequences from genomic sequences using GFF3 annotations.
+    
+    Parameters:
+    -----------
+    fna_file : str
+        Path to the genomic sequence file (FASTA format)
+    gff_file : str
+        Path to the GFF3 annotation file
+    faa_output : str
+        Path for the output protein sequence file (FASTA format)
+    genetic_code : int, default=11
+        Genetic code table for translation (11 for bacterial, 1 for eukaryotic)
+    verbose : bool, default=True
+        Whether to print progress information
+    
+    Returns:
+    --------
+    int : Number of proteins extracted
+    
+    Notes:
+    ------
+    - Uses genetic code table 11 (bacterial/archaeal) by default
+    - Handles reverse complement for CDS on negative strand
+    - Stops translation at first stop codon encountered
+    """
+    
+    try:
+        if verbose:
+            logger.info(f"Starting protein extraction for: {os.path.basename(fna_file)}")
+        
+        # Validate input files exist
+        if not os.path.exists(fna_file):
+            raise FileNotFoundError(f"FNA file not found: {fna_file}")
+        if not os.path.exists(gff_file):
+            raise FileNotFoundError(f"GFF file not found: {gff_file}")
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(faa_output), exist_ok=True)
+        
+        # Parse the genomic sequence
+        if verbose:
+            logger.info("Parsing genomic sequences...")
+        genome = SeqIO.to_dict(SeqIO.parse(fna_file, "fasta"))
+        
+        if not genome:
+            raise ValueError(f"No sequences found in FNA file: {fna_file}")
+        
+        # Parse the GFF file
+        if verbose:
+            logger.info("Parsing GFF3 annotations...")
+        db = gffutils.create_db(gff_file, ":memory:", merge_strategy="merge", keep_order=True)
+        
+        # Collect protein sequences
+        proteins = []
+        processed_cds = 0
+        skipped_cds = 0
+        
+        for feature in db.features_of_type("CDS", order_by="start"):
+            seq_id = feature.seqid  # Contig ID
+            
+            if seq_id not in genome:
+                if verbose and skipped_cds < 10:  # Limit warning messages
+                    logger.warning(f"Sequence ID '{seq_id}' not found in genome file")
+                skipped_cds += 1
+                continue
+            
+            seq = genome[seq_id].seq  # Get the corresponding genomic sequence
+            
+            # Extract the CDS sequence (GFF3 uses 1-based coordinates)
+            cds_seq = seq[feature.start - 1 : feature.end]
+            
+            # Handle strand orientation
+            if feature.strand == "-":
+                cds_seq = cds_seq.reverse_complement()
+            
+            # Translate to protein
+            try:
+                protein_seq = cds_seq.translate(table=genetic_code, to_stop=True)
+                
+                # Skip if translation resulted in empty sequence
+                if len(protein_seq) == 0:
+                    continue
+                
+                # Create a SeqRecord for the protein
+                # Use more informative description
+                description_parts = []
+                if hasattr(feature, 'attributes') and 'product' in feature.attributes:
+                    description_parts.append(feature.attributes['product'][0])
+                description_parts.append(f"{seq_id}:{feature.start}-{feature.end}({feature.strand})")
+                
+                protein_record = SeqRecord(
+                    protein_seq,
+                    id=feature.id if feature.id else f"CDS_{processed_cds}",
+                    description=" | ".join(description_parts)
+                )
+                proteins.append(protein_record)
+                processed_cds += 1
+                
+            except Exception as e:
+                if verbose:
+                    logger.warning(f"Translation failed for {feature.id}: {e}")
+                continue
+        
+        # Write the protein sequences to the FAA file
+        if proteins:
+            SeqIO.write(proteins, faa_output, "fasta")
+            if verbose:
+                logger.info(f"Successfully extracted {len(proteins)} protein sequences")
+                logger.info(f"Output written to: {faa_output}")
+        else:
+            logger.error("No protein sequences were extracted!")
+            return 0
+        
+        # Report statistics
+        if verbose:
+            logger.info(f"Processing summary:")
+            logger.info(f"  - CDS features processed: {processed_cds}")
+            logger.info(f"  - CDS features skipped: {skipped_cds}")
+            logger.info(f"  - Proteins extracted: {len(proteins)}")
+        
+        return len(proteins)
+        
+    except Exception as e:
+        logger.error(f"Error processing {os.path.basename(fna_file)}: {e}")
+        raise
+```
+
+## Batch Processing Functions
+
+```{python}
+def prepare_orthofinder_dataset(genome_info_list, output_base_dir="./DB/GENOME_Comparison/FAA", 
+                               genetic_code=11, processes=4):
+    """
+    Batch process multiple genomes to prepare FAA files for OrthoFinder.
+    
+    Parameters:
+    -----------
+    genome_info_list : list of tuples
+        List of (fna_file, gff_file, species_name) tuples
+    output_base_dir : str
+        Base directory for output FAA files
+    genetic_code : int
+        Genetic code for translation
+    processes : int
+        Number of parallel processes to use
+    
+    Returns:
+    --------
+    dict : Results summary with success/failure counts
+    """
+    
+    # Create output directory
+    os.makedirs(output_base_dir, exist_ok=True)
+    
+    # Prepare tasks for multiprocessing
+    tasks = []
+    for fna_file, gff_file, species_name in genome_info_list:
+        faa_output = os.path.join(output_base_dir, f"{species_name}.faa")
+        tasks.append((fna_file, gff_file, faa_output, genetic_code, False))  # verbose=False for batch
+    
+    logger.info(f"Starting batch processing of {len(tasks)} genomes using {processes} processes")
+    
+    # Process with multiprocessing
+    with Pool(processes=processes) as pool:
+        results = pool.starmap(extract_proteins, tasks)
+    
+    # Summarize results
+    successful = sum(1 for r in results if r > 0)
+    failed = len(results) - successful
+    total_proteins = sum(results)
+    
+    summary = {
+        'total_genomes': len(genome_info_list),
+        'successful': successful,
+        'failed': failed,
+        'total_proteins_extracted': total_proteins
+    }
+    
+    logger.info("Batch processing complete!")
+    logger.info(f"Summary: {successful}/{len(genome_info_list)} genomes processed successfully")
+    logger.info(f"Total proteins extracted: {total_proteins}")
+    
+    return summary
+
+def worker(args):
+    """Wrapper function for multiprocessing compatibility."""
+    return extract_proteins(*args)
+```
+
+## Validation and Quality Control
+
+```{python}
+def validate_faa_files(faa_directory, min_proteins=100):
+    """
+    Validate generated FAA files for quality control.
+    
+    Parameters:
+    -----------
+    faa_directory : str
+        Directory containing FAA files
+    min_proteins : int
+        Minimum number of proteins expected per file
+    
+    Returns:
+    --------
+    dict : Validation results
+    """
+    
+    results = {
+        'valid_files': [],
+        'small_files': [],
+        'empty_files': [],
+        'missing_files': []
+    }
+    
+    if not os.path.exists(faa_directory):
+        logger.error(f"Directory not found: {faa_directory}")
+        return results
+    
+    faa_files = [f for f in os.listdir(faa_directory) if f.endswith('.faa')]
+    
+    for faa_file in faa_files:
+        faa_path = os.path.join(faa_directory, faa_file)
+        
+        try:
+            sequences = list(SeqIO.parse(faa_path, "fasta"))
+            protein_count = len(sequences)
+            
+            if protein_count == 0:
+                results['empty_files'].append(faa_file)
+            elif protein_count < min_proteins:
+                results['small_files'].append((faa_file, protein_count))
+            else:
+                results['valid_files'].append((faa_file, protein_count))
+                
+        except Exception as e:
+            logger.error(f"Error reading {faa_file}: {e}")
+            results['missing_files'].append(faa_file)
+    
+    # Print validation summary
+    logger.info("Validation Results:")
+    logger.info(f"  Valid files (>={min_proteins} proteins): {len(results['valid_files'])}")
+    logger.info(f"  Small files (<{min_proteins} proteins): {len(results['small_files'])}")
+    logger.info(f"  Empty files: {len(results['empty_files'])}")
+    logger.info(f"  Problematic files: {len(results['missing_files'])}")
+    
+    return results
+```
+
+## Example Usage
+
+### Single Genome Processing
+
+```{python}
+# Example: Process Triplophysa_bombifrons genome
+fna_file = "./DB/GENOME_Comparison/Triplophysa_bombifrons/ncbi_dataset/data/GCA_029783895.1/GCA_029783895.1_ASM2978389v1_genomic.fna"
+gff_file = "./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3"
+faa_output = "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
+
+# Check if files exist before processing
+if os.path.exists(fna_file) and os.path.exists(gff_file):
+    protein_count = extract_proteins(fna_file, gff_file, faa_output)
+    print(f"Extracted {protein_count} proteins from Triplophysa_bombifrons")
+else:
+    print("Input files not found - this is expected if running as documentation")
+```
+
+### Batch Processing Example
+
+```{python}
+# Example genome dataset (modify paths as needed)
+genome_info_list = [
+    ("./DB/GENOME_Comparison/Species1/genome.fna", "./DB/GENOME_Comparison/Species1/annotation.gff3", "Species1"),
+    ("./DB/GENOME_Comparison/Species2/genome.fna", "./DB/GENOME_Comparison/Species2/annotation.gff3", "Species2"),
+    # Add more genomes as needed
+]
+
+# Process in batch (uncomment to run)
+# summary = prepare_orthofinder_dataset(
+#     genome_info_list, 
+#     output_base_dir="./DB/GENOME_Comparison/FAA",
+#     processes=6
+# )
+```
+
+### Quality Control Check
+
+```{python}
+# Validate the generated FAA files
+validation_results = validate_faa_files("./DB/GENOME_Comparison/FAA", min_proteins=100)
+
+# Display any problematic files
+if validation_results['small_files']:
+    print("Files with fewer proteins than expected:")
+    for filename, count in validation_results['small_files']:
+        print(f"  {filename}: {count} proteins")
+
+if validation_results['empty_files']:
+    print("Empty files found:")
+    for filename in validation_results['empty_files']:
+        print(f"  {filename}")
+```
+
+## Troubleshooting Common Issues
+
+### 1. Mismatched Sequence IDs
+If you encounter errors about sequence IDs not matching between FNA and GFF3 files:
+
+```python
+# Check sequence IDs in both files
+def check_sequence_ids(fna_file, gff_file):
+    """Compare sequence IDs between FNA and GFF files."""
+    
+    # Get IDs from FNA file
+    fna_ids = set()
+    for record in SeqIO.parse(fna_file, "fasta"):
+        fna_ids.add(record.id)
+    
+    # Get IDs from GFF file
+    gff_ids = set()
+    with open(gff_file, 'r') as f:
+        for line in f:
+            if not line.startswith('#') and line.strip():
+                gff_ids.add(line.split('\t')[0])
+    
+    print(f"FNA file contains {len(fna_ids)} sequences")
+    print(f"GFF file references {len(gff_ids)} sequences")
+    print(f"Common IDs: {len(fna_ids & gff_ids)}")
+    print(f"FNA-only IDs: {fna_ids - gff_ids}")
+    print(f"GFF-only IDs: {gff_ids - fna_ids}")
+
+# Example usage (uncomment to run)
+# check_sequence_ids(fna_file, gff_file)
+```
+
+### 2. Alternative Genetic Codes
+For different organism types, adjust the genetic code:
+
+```python
+# Common genetic codes:
+# 1  - Universal (most eukaryotes)
+# 11 - Bacterial, archaeal, and plant plastid (default)
+# 2  - Vertebrate mitochondrial
+# 4  - Mold, protozoan, coelenterate mitochondrial
+
+# Example for eukaryotic genomes
+# extract_proteins(fna_file, gff_file, faa_output, genetic_code=1)
+```
+
+## Output Organization
+
+The processed FAA files should be organized as follows for OrthoFinder input:
+
+```
+DB/GENOME_Comparison/FAA/
+├── Species1.faa
+├── Species2.faa
+├── Species3.faa
+└── ...
+```
+
+## Next Steps
+
+After completing protein extraction:
+
+1. **Validate all FAA files** using the validation function
+2. **Run OrthoFinder** on the generated protein sequences
+3. **Proceed to Step 2** of the OrthoFinder preparation pipeline
+
+## Notes
+
+- This workflow assumes genomes by default
+- Large genomes may require significant memory and processing time
+- Always validate the output before proceeding with OrthoFinder analysis
+
+## References
+
+- OrthoFinder: https://github.com/davidemms/OrthoFinder
+- BioPython: https://biopython.org/
+- gffutils: https://daler.github.io/gffutils/

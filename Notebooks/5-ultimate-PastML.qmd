@@ -1,0 +1,597 @@
+---
+title: "Ultimate PastML Analysis for Phylogenetic Trees"
+author: Yuxiang Huang
+date: 2025-04-25
+format:
+  pdf:
+    header-includes: | 
+      \usepackage{xcolor}
+      \usepackage{fvextra}
+      \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\\\\{\\}}
+    fig-pos: "H"
+toc: true
+pdf-engine: xelatex
+documentclass: bxjsarticle
+classoption: xelatex,ja=standard
+editor: visual
+indent: true
+# bibliography: references.bib
+---
+
+## Overview
+This notebook provides comprehensive phylogenetic tree visualization and ancestral state reconstruction using PastML. It combines:
+
+- **Phylogenetic tree visualization** from OrthoFinder results
+- **Gene duplication analysis** and statistical plotting
+- **PastML ancestral state reconstruction** for orthogroups
+- **Batch processing workflows** for large-scale analysis
+
+The analysis uses the latest OrthoFinder results (April 25) and provides both individual and batch processing capabilities.
+
+## Environment Setup
+
+```{python}
+#| vscode: {languageId: python}
+!which python3
+!mamba env list
+!jupyter kernelspec list
+from IPython.display import Image
+```
+
+> Using `env_biopython` kernel for BioPython functions and `pastml_env` for PastML analysis.
+
+## Methods
+
+### Enhanced Phylogenetic Tree Visualization
+
+#### Comprehensive Tree Plotting Function
+
+```{python}
+#| vscode: {languageId: python}
+from Bio import Phylo
+import matplotlib.pyplot as plt
+from io import StringIO
+
+def plot_phylogenetic_tree_with_lengths(newick_file_path, figsize=(10, 5), round_status=False, 
+                                       output_path_prefix=None, auto_output=True):
+    """
+    Loads a phylogenetic tree from a Newick file and plots it with branch lengths.
+
+    Parameters:
+    - newick_file_path: str, path to the Newick file containing the tree.
+    - figsize: tuple(int, int), optional, size of the plot figure (default is (10, 5)).
+    - round_status: bool, whether to use 4 decimal places (True) or 2 (False) for branch lengths.
+    - output_path_prefix: str, optional, custom output path prefix for saving files.
+    - auto_output: bool, whether to automatically generate output path from input filename.
+
+    Returns:
+    - None, but displays the phylogenetic tree plot with branch lengths and saves PNG/PDF.
+    """
+    # Load a tree from a Newick file
+    tree = Phylo.read(newick_file_path, "newick")
+    
+    # Create a plot
+    fig = plt.figure(figsize=figsize)
+    axes = fig.add_subplot(1, 1, 1)
+    
+    # Draw the tree with branch lengths
+    if round_status == False:
+        Phylo.draw(tree, axes=axes, do_show=False, 
+                  branch_labels=lambda c: f'{c.branch_length:.2f}' if c.branch_length else '')
+    else:
+        Phylo.draw(tree, axes=axes, do_show=False, 
+                  branch_labels=lambda c: f'{c.branch_length:.4f}' if c.branch_length else '')
+
+    # Determine output path
+    if output_path_prefix is None and auto_output:
+        output_prefix = newick_file_path.split("/")[-1][:-4]
+        output_path_prefix = f"./Notebooks/Figures/{output_prefix}"
+    elif output_path_prefix is None:
+        output_path_prefix = "./Notebooks/Figures/phylogenetic-tree"
+    
+    # Save and display the plot
+    plt.savefig(f"{output_path_prefix}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path_prefix}.pdf", bbox_inches='tight')
+    plt.show()
+
+# Example usage with auto-generated output paths:
+# plot_phylogenetic_tree_with_lengths("./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt")
+```
+
+#### Gene Tree Analysis Functions
+
+```{python}
+#| vscode: {languageId: python}
+def select_representatives(tree, max_depth=2):
+    """
+    Selects representative clade labels based on tree depth.
+
+    Parameters:
+    - tree: Phylogenetic tree object loaded using Bio.Phylo.
+    - max_depth: int, the maximum depth level to consider clades from.
+
+    Returns:
+    - representative_labels: list of str, containing clade names considered representative.
+    """
+    representative_labels = []
+    
+    def visit_clade(clade, current_depth):
+        if current_depth == max_depth:
+            # Leaf node at the required depth
+            if clade.name:
+                representative_labels.append(clade.name)
+        else:
+            for child in clade.clades:
+                visit_clade(child, current_depth + 1)
+    
+    visit_clade(tree.root, 0)
+    return representative_labels
+
+def prune_and_plot_tree(newick_file_path, max_depth=2, output_path_prefix=None, 
+                       figsize=(13, 10), orientation='horizontal'):
+    """
+    Load a phylogenetic tree from a Newick file, select representatives based on depth, and plot.
+
+    Parameters:
+    - newick_file_path: str, path to the Newick file containing the tree.
+    - max_depth: int, the maximum depth level to keep as representatives.
+    - output_path_prefix: str, optional, custom output path prefix.
+    - figsize: tuple(int, int), optional, size of the plot figure.
+    - orientation: str, 'horizontal' or 'vertical' to orient the tree.
+
+    Returns:
+    - None, but displays the pruned phylogenetic tree plot.
+    """
+    # Load the tree from the Newick file
+    tree = Phylo.read(newick_file_path, "newick")
+    
+    # Automatically select representative clades
+    representative_labels = select_representatives(tree, max_depth)
+
+    # Prune the tree
+    for clade in tree.get_terminals():
+        if clade.name not in representative_labels:
+            # Remove unwanted clades
+            tree.prune(target=clade)
+
+    # Configure Matplotlib figure
+    fig = plt.figure(figsize=figsize)
+    axes = fig.add_subplot(1, 1, 1)
+    
+    # Draw the pruned tree
+    Phylo.draw(tree, axes=axes, do_show=False)
+
+    # Adjust tree orientation if needed
+    if orientation == 'vertical':
+        axes.set_aspect('equal')
+        plt.xticks(rotation=90)
+
+    # Determine output path
+    if output_path_prefix is None:
+        og_id = newick_file_path.split("/")[-1].replace("_tree.txt", "")
+        output_path_prefix = f"./Notebooks/Figures/gene-tree-{og_id}"
+    
+    # Save and display the plot
+    plt.tight_layout()
+    plt.savefig(f"{output_path_prefix}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path_prefix}.pdf", bbox_inches='tight')
+    plt.show()
+```
+
+### Duplication Analysis Functions
+
+```{python}
+#| vscode: {languageId: python}
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_duplications_histogram(tsv_file_path, output_path_prefix="./Notebooks/Figures/duplications_per_orthogroup"):
+    """
+    Generate histogram plots for gene duplication analysis.
+    
+    Parameters:
+    - tsv_file_path: str, path to the TSV file containing duplication data.
+    - output_path_prefix: str, output path prefix for saving plots.
+    """
+    # Load the TSV file into a pandas DataFrame
+    df = pd.read_csv(tsv_file_path, sep='\t')
+
+    # Plot histogram for "Duplications (all)" and "Duplications (50% support)"
+    plt.figure(figsize=(14, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.hist(df['Duplications (all)'], bins=100, color='blue', alpha=0.7, edgecolor='black')
+    plt.title('Histogram of Duplications (all)')
+    plt.xlabel('Number of Duplications')
+    plt.ylabel('Frequency')
+
+    plt.subplot(1, 2, 2)
+    plt.hist(df['Duplications (50% support)'], bins=100, color='green', alpha=0.7, edgecolor='black')
+    plt.title('Histogram of Duplications (50% support)')
+    plt.xlabel('Number of Duplications')
+    plt.ylabel('Frequency')
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(f"{output_path_prefix}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path_prefix}.pdf", bbox_inches='tight')
+    plt.show()
+
+def plot_duplications_box_and_violin(tsv_file_path, output_path_prefix="./Notebooks/Figures/duplications_per_orthogroup_box_violin"):
+    """
+    Generate box plot and violin plot for gene duplication analysis.
+    
+    Parameters:
+    - tsv_file_path: str, path to the TSV file containing duplication data.
+    - output_path_prefix: str, output path prefix for saving plots.
+    """
+    # Load the TSV file into a pandas DataFrame
+    df = pd.read_csv(tsv_file_path, sep='\t')
+
+    # Set up the matplotlib figure
+    plt.figure(figsize=(14, 6))
+
+    # Box plot
+    plt.subplot(1, 2, 1)
+    sns.boxplot(data=df[['Duplications (all)', 'Duplications (50% support)']])
+    plt.title('Box Plot of Duplications')
+    plt.ylabel('Number of Duplications')
+
+    # Violin plot
+    plt.subplot(1, 2, 2)
+    sns.violinplot(data=df[['Duplications (all)', 'Duplications (50% support)']])
+    plt.title('Violin Plot of Duplications')
+    plt.ylabel('Number of Duplications')
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(f"{output_path_prefix}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path_prefix}.pdf", bbox_inches='tight')
+    plt.show()
+```
+
+## Species Tree Analysis
+
+### Species Tree Visualization
+
+#### Rooted Species Tree
+
+- [Species Tree without node labels](./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt)
+
+```{python}
+#| vscode: {languageId: python}
+plot_phylogenetic_tree_with_lengths("./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt", 
+                                   (10, 5), True)
+```
+
+#### Species Tree with Node Labels
+
+- [Species Tree with node labels](./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt)
+
+```{python}
+#| vscode: {languageId: python}
+plot_phylogenetic_tree_with_lengths("./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt",
+                                   figsize=(10, 5), round_status=False)
+```
+
+#### Gene Duplication Events Tree
+
+- [Gene Duplications Tree File](./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt)
+
+```{python}
+#| vscode: {languageId: python}
+plot_phylogenetic_tree_with_lengths("./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt",
+                                   figsize=(10, 5), round_status=True)
+```
+
+## Gene Tree Analysis
+
+### Individual Gene Trees
+
+#### Example: OG0000000
+
+- [Tree File](./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt)
+
+```{python}
+#| vscode: {languageId: python}
+prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt', 
+                   max_depth=8, output_path_prefix="./Notebooks/Figures/gene-tree-OG0000000")
+```
+
+#### Example: OG0000001
+
+- [Tree File](./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt)
+
+```{python}
+#| vscode: {languageId: python}
+prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt', 
+                   max_depth=8, output_path_prefix="./Notebooks/Figures/gene-tree-OG0000001")
+```
+
+## Comparative Genomics Statistics
+
+### Gene Duplication Analysis
+
+- [Duplications per Orthogroup Results](./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv)
+
+#### Histogram Analysis
+
+```{python}
+#| vscode: {languageId: python}
+plot_duplications_histogram('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv',
+                           output_path_prefix="./Notebooks/Figures/duplications_per_orthogroup")
+```
+
+#### Box and Violin Plot Analysis
+
+```{python}
+#| vscode: {languageId: python}
+plot_duplications_box_and_violin('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv',
+                                output_path_prefix="./Notebooks/Figures/duplications_per_orthogroup_box_violin")
+```
+
+## PastML Ancestral State Reconstruction
+
+### Data Preparation for PastML
+
+#### One-Hot Encoding of Gene Count Data
+
+```{python}
+#| vscode: {languageId: python}
+import pandas as pd
+
+# Read the TSV file, excluding the 'Total' column
+df = pd.read_csv('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', 
+                sep='\t', usecols=lambda column: column != 'Total')
+
+# Convert all non-zero values to 1 and keep zero values as zero
+df.iloc[:, 1:] = df.iloc[:, 1:].apply(lambda col: col.apply(lambda x: 1 if x != 0 else 0))
+
+# Save the modified DataFrame to output file
+df.to_csv('./Notebooks/Tables/one-hot-orthogroups-gene-count.tsv', sep='\t', index=False)
+
+print("One-hot encoding completed. First 5 rows:")
+print(df.head())
+```
+
+#### Verify One-Hot Encoding Output
+
+```{python}
+#| vscode: {languageId: python}
+!head -n 10 ./Notebooks/Tables/one-hot-orthogroups-gene-count.tsv
+```
+
+#### Generate CSV Files for PastML Input
+
+```{python}
+#| vscode: {languageId: python}
+import pandas as pd
+import os
+
+# Create output directory if it doesn't exist
+os.makedirs('./Notebooks/Tables/PastMLdata', exist_ok=True)
+
+# Read the one-hot encoded TSV file into a DataFrame
+df = pd.read_csv('./Notebooks/Tables/one-hot-orthogroups-gene-count.tsv', sep='\t')
+
+# Iterate over each row in the DataFrame
+for index, row in df.iterrows():
+    # Create a new DataFrame for the current Orthogroup
+    orthogroup_df = pd.DataFrame({
+        'id': df.columns[1:],  # Exclude the 'Orthogroup' column for the ids
+        'Status': row[1:]  # Exclude the 'Orthogroup' value for the statuses
+    })
+    
+    # Set the Orthogroup as the filename
+    filename = f"./Notebooks/Tables/PastMLdata/{row['Orthogroup']}.csv"
+    
+    # Save the new DataFrame to a CSV file
+    orthogroup_df.to_csv(filename, index=False)
+
+print(f"Generated CSV files for {len(df)} orthogroups in ./Notebooks/Tables/PastMLdata/")
+```
+
+### PastML Analysis Setup and Testing
+
+#### Verify Data Files and Tree Compatibility
+
+```{python}
+#| vscode: {languageId: python}
+# Check tree files
+!head -n 3 ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt 
+!head -n 3 ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt
+
+# Check example CSV data files
+!echo "=== OG0000000.csv ==="
+!cat ./Notebooks/Tables/PastMLdata/OG0000000.csv
+```
+
+#### PastML Help Documentation
+
+```{python}
+#| vscode: {languageId: python}
+!conda run -n pastml_env pastml --help
+```
+
+#### Test PastML Analysis
+
+```{python}
+#| vscode: {languageId: python}
+# Create output directory for PastML results
+!mkdir -p ./Notebooks/Figures/PastMLTrees
+
+# Test PastML with example orthogroup
+!conda run -n pastml_env pastml \
+    --tree ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt \
+    --data ./Notebooks/Tables/PastMLdata/OG0000000.csv \
+    --columns Status \
+    --html ./Notebooks/Figures/PastMLTrees/OG0000000_map.html \
+    --data_sep ,
+
+echo "Test PastML analysis completed for OG0000000"
+```
+
+#### Additional Test Cases
+
+```{python}
+#| vscode: {languageId: python}
+# Test with different orthogroups
+!conda run -n pastml_env pastml \
+    --tree ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt \
+    --data ./Notebooks/Tables/PastMLdata/OG0000026.csv \
+    --columns Status \
+    --html ./Notebooks/Figures/PastMLTrees/OG0000026_map.html \
+    --data_sep ,
+
+echo "Test PastML analysis completed for OG0000026"
+```
+
+### Batch Processing for All Orthogroups
+
+#### Create Batch Processing Directory
+
+```{python}
+#| vscode: {languageId: python}
+import os
+os.makedirs('./Notebooks/Figures/PastMLTrees', exist_ok=True)
+print("PastML output directory created/verified.")
+```
+
+#### Batch Process All Orthogroups
+
+```{python}
+#| vscode: {languageId: python}
+import glob
+import os
+
+# Find all orthogroup CSV files
+onehot_OG_pattern = "./Notebooks/Tables/PastMLdata/OG*.csv"
+onehot_OG_pathlist = glob.glob(onehot_OG_pattern)
+
+print(f"Found {len(onehot_OG_pathlist)} orthogroup files to process.")
+
+# Process each orthogroup (limit to first 10 for demonstration)
+for i, onehot_OG_path in enumerate(onehot_OG_pathlist[:10]):
+    id_OG = onehot_OG_path.split("/")[-1].split(".")[0]
+    
+    # Run PastML for each orthogroup
+    cmd = f"""conda run -n pastml_env pastml \
+        --tree ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt \
+        --data ./Notebooks/Tables/PastMLdata/{id_OG}.csv \
+        --columns Status \
+        --html ./Notebooks/Figures/PastMLTrees/{id_OG}_map.html \
+        --data_sep ,"""
+    
+    os.system(cmd)
+    print(f"Processed {i+1}/10: {id_OG}")
+
+print("Batch processing completed for demonstration set.")
+```
+
+#### Full Batch Processing (Commented)
+
+```{python}
+#| vscode: {languageId: python}
+# Uncomment and run for full batch processing of all orthogroups
+# WARNING: This may take a very long time depending on the number of orthogroups
+
+# import glob
+# import os
+# 
+# onehot_OG_pattern = "./Notebooks/Tables/PastMLdata/OG*.csv"
+# onehot_OG_pathlist = glob.glob(onehot_OG_pattern)
+# 
+# for onehot_OG_path in onehot_OG_pathlist:
+#     id_OG = onehot_OG_path.split("/")[-1].split(".")[0]
+#     cmd = f"""conda run -n pastml_env pastml \
+#         --tree ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt \
+#         --data ./Notebooks/Tables/PastMLdata/{id_OG}.csv \
+#         --columns Status \
+#         --html ./Notebooks/Figures/PastMLTrees/{id_OG}_map.html \
+#         --data_sep ,"""
+#     os.system(cmd)
+#     print(f"OG: {id_OG} Done.")
+# 
+# print("Full batch processing completed.")
+```
+
+## Advanced PastML Options and Features
+
+### PastML Command Line Options Summary
+
+The PastML tool supports numerous options for ancestral character reconstruction:
+
+- **Prediction Methods**: MPPA, MAP, JOINT, DOWNPASS, ACCTRAN, DELTRAN, COPY, ALL, ML, MP
+- **Evolutionary Models**: JC, F81, EFT, HKY, JTT, CUSTOM_RATES
+- **Visualization Options**: HTML compressed, full HTML, mixed HTML, Pajek format
+- **Timeline Analysis**: SAMPLED, NODES, LTT timeline types
+- **Advanced Features**: Polytomy resolution, focus states, custom colors
+
+### Example Advanced Commands
+
+```{python}
+#| vscode: {languageId: python}
+# Example with custom visualization options
+!conda run -n pastml_env pastml \
+    --tree ./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt \
+    --data ./Notebooks/Tables/PastMLdata/OG0000000.csv \
+    --columns Status \
+    --html_compressed ./Notebooks/Figures/PastMLTrees/OG0000000_compressed.html \
+    --html ./Notebooks/Figures/PastMLTrees/OG0000000_full.html \
+    --data_sep , \
+    --prediction_method MPPA \
+    --model F81 \
+    --resolve_polytomies
+
+echo "Advanced PastML analysis completed with multiple output formats."
+```
+
+## Results Summary and Output Organization
+
+### Generated Files Structure
+
+The analysis generates the following outputs:
+
+#### Phylogenetic Visualizations
+- **Species Trees**: `./Notebooks/Figures/SpeciesTree_*.png|pdf`
+- **Gene Trees**: `./Notebooks/Figures/gene-tree-OG*.png|pdf`
+- **Duplication Plots**: `./Notebooks/Figures/duplications_*.png|pdf`
+
+#### PastML Analysis Results
+- **Input Data**: `./Notebooks/Tables/PastMLdata/OG*.csv`
+- **One-Hot Encoded Data**: `./Notebooks/Tables/one-hot-orthogroups-gene-count.tsv`
+- **HTML Visualizations**: `./Notebooks/Figures/PastMLTrees/OG*_map.html`
+
+#### Data Sources
+- **Species Trees**: `./Outputs/OrthoFinder/Results_Apr25/Species_Tree/`
+- **Gene Trees**: `./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/`
+- **Gene Count Data**: `./Outputs/OrthoFinder/Results_Apr25/Orthogroups/`
+- **Duplication Statistics**: `./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/`
+
+### Analysis Workflow Summary
+
+1. **Data Preparation**: One-hot encoding of gene presence/absence data
+2. **File Generation**: CSV files for each orthogroup compatible with PastML
+3. **Tree Visualization**: Species and gene tree plotting with branch lengths
+4. **Statistical Analysis**: Gene duplication frequency analysis
+5. **Ancestral Reconstruction**: PastML analysis for character state evolution
+6. **Batch Processing**: Automated analysis of all orthogroups
+
+## Future Enhancements and Todo Items
+
+### Planned Improvements
+- **Interactive Visualizations**: Integration with plotly for interactive tree exploration
+- **Statistical Summaries**: Automated generation of reconstruction statistics
+- **Custom Color Schemes**: Species-specific color coding for improved visualization
+- **Network Analysis**: Phylogenetic network visualization for complex evolutionary relationships
+- **Parallel Processing**: Multi-threaded batch processing for faster analysis
+
+### Usage Notes
+- Ensure `pastml_env` conda environment is properly configured before running PastML commands
+- Large datasets may require significant computational time for batch processing
+- HTML outputs can be viewed in web browsers for interactive exploration
+- Tree files must be properly rooted for accurate ancestral state reconstruction
+
+---
+*This analysis integrates phylogenetic visualization with ancestral state reconstruction using the latest OrthoFinder results (April 25) and provides a comprehensive workflow for evolutionary analysis.*

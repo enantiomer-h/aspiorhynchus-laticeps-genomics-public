@@ -1,0 +1,5 @@
+"ID","Description","GeneRatio","BgRatio","pvalue","p.adjust","qvalue","geneID","Count"
+"GO:0000791","euchromatin","7/84","147/22757",1.21524777186865e-06,0.000104511308380704,6.77980335884617e-05,"evm.model.ctg94.10/evm.model.ctg175.43/evm.model.ctg3011.7/evm.model.ctg3899.80/evm.model.ctg2857.43/evm.model.ctg3978.27/evm.model.ctg4129.6",7
+"GO:0001651","dense fibrillar component","3/84","11/22757",7.83580511245082e-06,0.000336939619835385,0.000218577721557839,"evm.model.ctg175.43/evm.model.ctg3011.7/evm.model.ctg3899.80",3
+"GO:0097431","mitotic spindle pole","4/84","60/22757",7.19541599680784e-05,0.00206268591908491,0.00133809490466953,"evm.model.ctg2847.1/evm.model.ctg3299.4/evm.model.ctg144.15/evm.model.ctg3527.67",4
+"GO:0000792","heterochromatin","6/84","222/22757",0.00017372791658811,0.00373515020664437,0.00242304725767627,"evm.model.ctg94.10/evm.model.ctg175.43/evm.model.ctg3011.7/evm.model.ctg3899.80/evm.model.ctg2857.43/evm.model.ctg4129.6",6

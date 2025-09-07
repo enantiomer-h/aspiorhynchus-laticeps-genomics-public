@@ -1,0 +1,2 @@
+ID	Description	GeneRatio	BgRatio	pvalue	p.adjust	qvalue	geneID	Count
+ko00780	Biotin metabolism	2/59	6/16222	0.000193248506007932	0.0125611528905156	0.0103743934804258	evm.model.ctg3472.13/evm.model.ctg681.3	2

@@ -1,0 +1,857 @@
+---
+title: "Ultimate Enrichment Analysis for Specific Orthogroups"
+jupyter:
+  kernelspec:
+    display_name: clusterprofiler R
+    language: R
+    name: ir_clusterprofiler_4100_env
+---
+
+## Overview
+This notebook performs comprehensive GO and KO enrichment analysis for specific orthogroups identified in the comparative genomics analysis. It analyzes three categories of orthogroups:
+- **Increased gene families**: Where *Aspiorhynchus_laticeps* has the maximum gene count
+- **Decreased gene families**: Where *Aspiorhynchus_laticeps* has the minimum gene count  
+- **Species-specific families**: Where only *Aspiorhynchus_laticeps* has genes (unique families)
+
+## Environment Setup
+
+```{r}
+#| vscode: {languageId: r}
+R.home()
+```
+
+## Methods
+
+### Load Required Libraries
+
+```{r}
+#| vscode: {languageId: r}
+library(dplyr)
+library(stringr)
+library(jsonlite)
+library(purrr)
+library(RCurl)
+library(GO.db)
+library(AnnotationForge)
+library(clusterProfiler)
+library(openxlsx)
+library(ggplot2)
+library(gridExtra)
+library(R6)
+library(enrichplot)
+```
+
+### Initialize Custom Annotation Database
+
+```{r}
+#| vscode: {languageId: r}
+flag_file <- "./Outputs/Eggnog/executed.flag"
+
+# Install custom database only if not already done
+if (!file.exists(flag_file)) {
+  install.packages("./DB/org.Alaticeps.eg.db", repos=NULL, type="sources")
+  file.create(flag_file)
+} else {
+  print("Custom annotation database already installed.")
+}
+
+library(org.Alaticeps.eg.db)
+keytypes(org.Alaticeps.eg.db)
+GO_database <- 'org.Alaticeps.eg.db'
+```
+
+## Orthogroup Classification
+
+### Data Loading and Classification
+[Orthogroups Gene Count Data](./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv)
+
+#### Increased Gene Families
+Orthogroups where *Aspiorhynchus_laticeps* has the maximum gene count compared to other species.
+
+```{r}
+#| vscode: {languageId: r}
+# Read the orthogroup gene count data
+data <- read.table("./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv", 
+                   header = TRUE, stringsAsFactors = FALSE)
+
+# Find orthogroups where Aspiorhynchus_laticeps has the maximum gene count
+orthogroups_with_max <- data$Orthogroup[apply(data[, -c(1, ncol(data))], 1, function(row) {
+  row["Aspiorhynchus_laticeps"] == max(row)
+})]
+
+# Store as vector for analysis
+increased_genes_OG <- c(orthogroups_with_max)
+print(paste("Number of increased gene families:", length(increased_genes_OG)))
+```
+
+#### Decreased Gene Families
+Orthogroups where *Aspiorhynchus_laticeps* has the minimum gene count compared to other species.
+
+```{r}
+#| vscode: {languageId: r}
+# Find orthogroups where Aspiorhynchus_laticeps has the minimum gene count
+orthogroups_with_min <- data$Orthogroup[apply(data[, -c(1, ncol(data))], 1, function(row) {
+  row["Aspiorhynchus_laticeps"] == min(row)
+})]
+
+# Store as vector for analysis
+decreased_genes_OG <- c(orthogroups_with_min)
+print(paste("Number of decreased gene families:", length(decreased_genes_OG)))
+```
+
+#### Species-Specific Gene Families
+Orthogroups where only *Aspiorhynchus_laticeps* has genes (all other species have zero).
+
+```{r}
+#| vscode: {languageId: r}
+# Find orthogroups unique to Aspiorhynchus_laticeps
+orthogroups_with_unique_nonzero <- data$Orthogroup[apply(data[, -c(1, ncol(data))], 1, function(row) {
+  asp_value <- row["Aspiorhynchus_laticeps"]
+  other_values <- row[names(row) != "Aspiorhynchus_laticeps"]
+  asp_value > 0 && all(other_values == 0)
+})]
+
+# Store as vector for analysis
+unique_nonzero_genes_OG <- c(orthogroups_with_unique_nonzero)
+print(paste("Number of species-specific gene families:", length(unique_nonzero_genes_OG)))
+print("First 10 unique orthogroups:")
+print(head(unique_nonzero_genes_OG, 10))
+```
+
+## GO Enrichment Analysis
+
+### GO Enrichment Function
+This function performs Gene Ontology enrichment analysis for specific orthogroups.
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db, 
+                              key_type="GID", plot_dir="./Outputs/GO_Enrichment/Plots",
+                              p_cutoff=0.01, q_cutoff=0.05, 
+                              # Publication-quality plot parameters
+                              show_category=20, plot_width=12, plot_height=8, 
+                              font_size=12, title_size=14, axis_title_size=13,
+                              color_palette="viridis", output_formats=c("png", "pdf"),
+                              dpi=300, theme_style="publication") {
+  
+  # Load additional libraries for enhanced plotting
+  if (!requireNamespace("viridis", quietly = TRUE)) {
+    install.packages("viridis")
+  }
+  if (!requireNamespace("RColorBrewer", quietly = TRUE)) {
+    install.packages("RColorBrewer")
+  }
+  library(viridis)
+  library(RColorBrewer)
+  
+  # Read OrthoFinder results
+  orthogroups_df <- read.delim(input_path, header = TRUE)
+  
+  # Extract gene IDs from target orthogroups
+  genes_of_interest <- c()
+  filtered_rows <- orthogroups_df[orthogroups_df$Orthogroup %in% target_ogs, ]
+  
+  for (row in 1:nrow(filtered_rows)) {
+    selected_row <- filtered_rows[row, ]
+    
+    for (colname in names(selected_row)) {
+      if (colname != "Orthogroup") {
+        genes_split <- unlist(strsplit(as.character(selected_row[[colname]]), ", "))
+        genes_of_interest <- c(genes_of_interest, genes_split)
+      }
+    }
+  }
+  
+  # Remove duplicates and empty strings
+  genes_of_interest <- unique(genes_of_interest[genes_of_interest != ""])
+  
+  if (length(genes_of_interest) == 0) {
+    warning("No genes found for the specified orthogroups")
+    return(NULL)
+  }
+  
+  # Perform GO enrichment analysis
+  tryCatch({
+    ego_result <- enrichGO(
+      gene          = genes_of_interest,
+      OrgDb         = org_db,
+      keyType       = key_type,
+      ont           = ont,
+      pAdjustMethod = "BH",
+      pvalueCutoff  = p_cutoff,
+      qvalueCutoff  = q_cutoff
+    )
+    
+    # Create output directory
+    if (!dir.exists(plot_dir)) {
+      dir.create(plot_dir, recursive = TRUE)
+    }
+    
+    # Save results table
+    write.csv(as.data.frame(ego_result), output_path, row.names=FALSE)
+    
+    # Generate and save visualizations if results exist
+    if (nrow(ego_result) > 0) {
+      
+      # Define publication-quality theme
+      publication_theme <- function() {
+        theme_minimal() +
+        theme(
+          # Text elements
+          text = element_text(size = font_size, family = "Arial"),
+          plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, margin = margin(b = 20)),
+          axis.title.x = element_text(size = axis_title_size, face = "bold", margin = margin(t = 15)),
+          axis.title.y = element_text(size = axis_title_size, face = "bold", margin = margin(r = 15)),
+          axis.text.x = element_text(size = font_size - 1, color = "black"),
+          axis.text.y = element_text(size = font_size - 1, color = "black", hjust = 1),
+          
+          # Legend
+          legend.title = element_text(size = font_size, face = "bold"),
+          legend.text = element_text(size = font_size - 1),
+          legend.position = "right",
+          legend.margin = margin(l = 20),
+          legend.key.size = unit(0.8, "cm"),
+          
+          # Panel and grid
+          panel.grid.major = element_line(color = "grey90", size = 0.5),
+          panel.grid.minor = element_line(color = "grey95", size = 0.3),
+          panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          
+          # Plot margins
+          plot.margin = margin(20, 20, 20, 20),
+          
+          # Strip text for facets
+          strip.text = element_text(size = font_size, face = "bold", margin = margin(5, 5, 5, 5))
+        )
+      }
+      
+      # Define color palette (robust version with error handling)
+      get_color_palette <- function(palette_name, n_colors) {
+        if (palette_name == "viridis") {
+          return(viridis::viridis(n_colors))
+        } else if (palette_name == "plasma") {
+          return(viridis::plasma(n_colors))
+        } else if (palette_name == "inferno") {
+          return(viridis::inferno(n_colors))
+        } else if (palette_name == "magma") {
+          return(viridis::magma(n_colors))
+        } else if (palette_name == "turbo") {
+          return(viridis::turbo(n_colors))
+        } else if (palette_name %in% rownames(RColorBrewer::brewer.pal.info)) {
+          max_colors <- RColorBrewer::brewer.pal.info[palette_name, "maxcolors"]
+          if (n_colors <= max_colors) {
+            # Ensure minimum of 3 colors for RColorBrewer to prevent crashes
+            return(RColorBrewer::brewer.pal(max(3, n_colors), palette_name))
+          } else {
+            return(colorRampPalette(RColorBrewer::brewer.pal(max_colors, palette_name))(n_colors))
+          }
+        } else {
+          # Robust default fallback with error handling
+          return(RColorBrewer::brewer.pal(max(3, min(n_colors, 8)), "Set2"))
+        }
+      }
+      
+      # Enhanced Bar plot
+      ont_full_name <- switch(ont,
+                             "BP" = "Biological Process",
+                             "MF" = "Molecular Function", 
+                             "CC" = "Cellular Component",
+                             ont)
+      
+      barplot_plot <- barplot(ego_result, showCategory = show_category, x = "Count") +
+        scale_fill_gradientn(colors = get_color_palette(color_palette, 100),
+                           name = "-log10(p.adjust)",
+                           guide = guide_colorbar(title.position = "top")) +
+        labs(
+          title = paste("GO", ont_full_name, "Enrichment Analysis"),
+          x = "Gene Count",
+          y = "GO Terms",
+          subtitle = paste("Top", min(show_category, nrow(ego_result)), "enriched terms")
+        ) +
+        publication_theme() +
+        theme(
+          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size - 2),
+          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15))
+        )
+      
+      # Enhanced Dot plot  
+      dotplot_plot <- dotplot(ego_result, showCategory = show_category, x = "GeneRatio") +
+        scale_color_gradientn(colors = get_color_palette(color_palette, 100),
+                            name = "-log10(p.adjust)",
+                            guide = guide_colorbar(title.position = "top")) +
+        scale_size_continuous(name = "Gene Count", range = c(3, 8)) +
+        labs(
+          title = paste("GO", ont_full_name, "Enrichment Analysis"),
+          x = "Gene Ratio",
+          y = "GO Terms",
+          subtitle = paste("Top", min(show_category, nrow(ego_result)), "enriched terms")
+        ) +
+        publication_theme() +
+        theme(
+          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size - 2),
+          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
+          legend.box = "horizontal",
+          legend.margin = margin(t = 10)
+        )
+      
+      # Save plots in multiple formats
+      for (format in output_formats) {
+        # Bar plot
+        barplot_file <- file.path(plot_dir, paste0("GO_enrichment_barplot.", format))
+        if (format == "pdf") {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 device = "pdf", useDingbats = FALSE)
+        } else if (format == "svg") {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 device = "svg")
+        } else {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 dpi = dpi, device = format)
+        }
+        
+        # Dot plot
+        dotplot_file <- file.path(plot_dir, paste0("GO_enrichment_dotplot.", format))
+        if (format == "pdf") {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 device = "pdf", useDingbats = FALSE)
+        } else if (format == "svg") {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 device = "svg")
+        } else {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 dpi = dpi, device = format)
+        }
+      }
+      
+      print(paste("GO enrichment completed. Results saved to:", output_path))
+      print(paste("Publication-quality plots saved to:", plot_dir))
+      print(paste("Available formats:", paste(output_formats, collapse = ", ")))
+    } else {
+      print("No significant GO terms found for the given cutoffs")
+    }
+    
+    return(ego_result)
+    
+  }, error = function(e) {
+    print(paste("Error in GO enrichment:", e$message))
+    return(NULL)
+  })
+}
+```
+
+### GO Enrichment Analysis: Increased Gene Families
+
+#### Biological Process (BP)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "BP",
+  output_path = "./Notebooks/Tables/GO_enrichment_increased_BP_results.csv",
+  target_ogs = increased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_height = 12,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_BP_Plots"
+)
+```
+
+#### Molecular Function (MF)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "MF",
+  output_path = "./Notebooks/Tables/GO_enrichment_increased_MF_results.csv",
+  target_ogs = increased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_height = 12,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_MF_Plots"
+)
+```
+
+#### Cellular Component (CC)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "CC",
+  output_path = "./Notebooks/Tables/GO_enrichment_increased_CC_results.csv",
+  target_ogs = increased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_height = 12,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_CC_Plots"
+)
+```
+
+### GO Enrichment Analysis: Decreased Gene Families
+
+#### Biological Process (BP)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "BP",
+  output_path = "./Notebooks/Tables/GO_enrichment_decreased_BP_results.csv",
+  target_ogs = decreased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_BP_Plots"
+)
+```
+
+#### Molecular Function (MF)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "MF",
+  output_path = "./Notebooks/Tables/GO_enrichment_decreased_MF_results.csv",
+  target_ogs = decreased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_MF_Plots"
+)
+```
+
+#### Cellular Component (CC)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "CC",
+  output_path = "./Notebooks/Tables/GO_enrichment_decreased_CC_results.csv",
+  target_ogs = decreased_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_CC_Plots"
+)
+```
+
+### GO Enrichment Analysis: Species-Specific Gene Families
+
+#### Biological Process (BP)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "BP",
+  output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_BP_results.csv",
+  target_ogs = unique_nonzero_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_BP_Plots"
+)
+```
+
+#### Molecular Function (MF)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "MF",
+  output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_MF_results.csv",
+  target_ogs = unique_nonzero_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_MF_Plots"
+)
+```
+
+#### Cellular Component (CC)
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "CC",
+  output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_CC_results.csv",
+  target_ogs = unique_nonzero_genes_OG,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_CC_Plots"
+)
+```
+
+## KEGG Pathway (KO) Enrichment Analysis
+
+### KO Enrichment Function
+This function performs KEGG pathway enrichment analysis using the enricher function from clusterProfiler.
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_database, target_ogs, 
+                                            output_path, plot_dir="./Outputs/KO_Enrichment/Plots",
+                                            p_cutoff=0.05, q_cutoff=0.05, min_gs_size=1,
+                                            # Publication-quality plot parameters
+                                            show_category=20, plot_width=14, plot_height=10, 
+                                            font_size=12, title_size=14, axis_title_size=13,
+                                            color_palette="Set2", output_formats=c("png", "pdf"),
+                                            dpi=300, theme_style="publication") {
+  
+  # Load additional libraries for enhanced plotting
+  if (!requireNamespace("viridis", quietly = TRUE)) {
+    install.packages("viridis")
+  }
+  if (!requireNamespace("RColorBrewer", quietly = TRUE)) {
+    install.packages("RColorBrewer")
+  }
+  library(viridis)
+  library(RColorBrewer)
+  
+  tryCatch({
+    # Load gene-to-pathway mappings
+    gene2pathway_name <- read.table(data_path, sep="\t", header=TRUE, stringsAsFactors=FALSE)
+    term2gene <- gene2pathway_name[, c("Pathway", "GID")]
+    
+    # Extract genes from target orthogroups
+    orthogroups_df <- read.delim(input_path, header = TRUE)
+    genes_of_interest <- c()
+    filtered_rows <- orthogroups_df[orthogroups_df$Orthogroup %in% target_ogs, ]
+    
+    for (row in 1:nrow(filtered_rows)) {
+      selected_row <- filtered_rows[row, ]
+      
+      for (colname in names(selected_row)) {
+        if (colname != "Orthogroup") {
+          genes_split <- unlist(strsplit(as.character(selected_row[[colname]]), ", "))
+          genes_of_interest <- c(genes_of_interest, genes_split)
+        }
+      }
+    }
+    
+    # Remove duplicates and empty strings
+    genes_of_interest <- unique(genes_of_interest[genes_of_interest != ""])
+    
+    if (length(genes_of_interest) == 0) {
+      warning("No genes found for KO enrichment analysis")
+      return(NULL)
+    }
+    
+    # Load KEGG database
+    load(file=KEGG_database)
+    pathway2name$Name <- gsub("\\s*\\[BR:ko[0-9]+\\]", "", pathway2name$Name)
+    
+    # Perform KEGG enrichment analysis
+    KEGG_result <- enricher(
+      gene          = genes_of_interest,
+      TERM2GENE     = term2gene,
+      TERM2NAME     = pathway2name,
+      pvalueCutoff  = p_cutoff,
+      qvalueCutoff  = q_cutoff,
+      pAdjustMethod = "BH",
+      minGSSize     = min_gs_size
+    )
+    
+    # Save results
+    write.table(as.data.frame(KEGG_result), output_path, sep="\t", row.names=FALSE, quote=FALSE)
+    
+    # Create plot directory
+    if (!dir.exists(plot_dir)) {
+      dir.create(plot_dir, recursive=TRUE)
+    }
+    
+    # Generate visualizations if results exist
+    if (nrow(KEGG_result) > 0) {
+      
+      # Define publication-quality theme for KEGG plots
+      kegg_publication_theme <- function() {
+        theme_minimal() +
+        theme(
+          # Text elements
+          text = element_text(size = font_size, family = "Arial"),
+          plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, margin = margin(b = 20)),
+          axis.title.x = element_text(size = axis_title_size, face = "bold", margin = margin(t = 15)),
+          axis.title.y = element_text(size = axis_title_size, face = "bold", margin = margin(r = 15)),
+          axis.text.x = element_text(size = font_size - 1, color = "black", angle = 0),
+          axis.text.y = element_text(size = font_size - 2, color = "black", hjust = 1),
+          
+          # Legend
+          legend.title = element_text(size = font_size, face = "bold"),
+          legend.text = element_text(size = font_size - 1),
+          legend.position = "right",
+          legend.margin = margin(l = 20),
+          legend.key.size = unit(0.8, "cm"),
+          legend.box = "vertical",
+          
+          # Panel and grid
+          panel.grid.major.x = element_line(color = "grey90", size = 0.5),
+          panel.grid.minor.x = element_line(color = "grey95", size = 0.3),
+          panel.grid.major.y = element_line(color = "grey90", size = 0.3),
+          panel.grid.minor.y = element_blank(),
+          panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          
+          # Plot margins
+          plot.margin = margin(20, 25, 20, 20),
+          
+          # Strip text for facets
+          strip.text = element_text(size = font_size, face = "bold", margin = margin(5, 5, 5, 5))
+        )
+      }
+      
+      # Define color palette function
+      get_kegg_color_palette <- function(palette_name, n_colors) {
+        if (palette_name == "viridis") {
+          return(viridis::viridis(n_colors))
+        } else if (palette_name == "plasma") {
+          return(viridis::plasma(n_colors))
+        } else if (palette_name == "inferno") {
+          return(viridis::inferno(n_colors))
+        } else if (palette_name == "magma") {
+          return(viridis::magma(n_colors))
+        } else if (palette_name == "turbo") {
+          return(viridis::turbo(n_colors))
+        } else if (palette_name %in% rownames(RColorBrewer::brewer.pal.info)) {
+          max_colors <- RColorBrewer::brewer.pal.info[palette_name, "maxcolors"]
+          if (n_colors <= max_colors) {
+            return(RColorBrewer::brewer.pal(max(3, n_colors), palette_name))
+          } else {
+            return(colorRampPalette(RColorBrewer::brewer.pal(max_colors, palette_name))(n_colors))
+          }
+        } else {
+          return(RColorBrewer::brewer.pal(max(3, min(n_colors, 8)), "Set2"))  # Default fallback
+        }
+      }
+      
+      # Function to truncate long pathway names for better readability
+      truncate_names <- function(names, max_length = 50) {
+        ifelse(nchar(names) > max_length, 
+               paste0(substr(names, 1, max_length), "..."), 
+               names)
+      }
+      
+      # Prepare data for enhanced plotting
+      kegg_data <- as.data.frame(KEGG_result)
+      kegg_data$Description_short <- truncate_names(kegg_data$Description, 45)
+      
+      # Enhanced Bar plot
+      barplot_plot <- barplot(KEGG_result, showCategory = show_category, x = "Count") +
+        scale_fill_gradientn(
+          colors = get_kegg_color_palette(color_palette, 100),
+          name = "-log10(p.adjust)",
+          guide = guide_colorbar(
+            title.position = "top",
+            title.hjust = 0.5,
+            barwidth = unit(0.8, "cm"),
+            barheight = unit(8, "cm")
+          )
+        ) +
+        labs(
+          title = "KEGG Pathway Enrichment Analysis",
+          x = "Gene Count",
+          y = "KEGG Pathways",
+          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways"),
+          caption = "Pathways ranked by statistical significance (p.adjust)"
+        ) +
+        kegg_publication_theme() +
+        theme(
+          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
+          plot.caption = element_text(size = font_size - 2, hjust = 1, margin = margin(t = 10))
+        )
+      
+      # Enhanced Dot plot with GeneRatio
+      dotplot_plot <- dotplot(KEGG_result, showCategory = show_category, x = "GeneRatio") +
+        scale_color_gradientn(
+          colors = get_kegg_color_palette(color_palette, 100),
+          name = "-log10(p.adjust)",
+          guide = guide_colorbar(
+            title.position = "top",
+            title.hjust = 0.5,
+            barwidth = unit(0.8, "cm"),
+            barheight = unit(6, "cm")
+          )
+        ) +
+        scale_size_continuous(
+          name = "Gene Count", 
+          range = c(3, 10),
+          guide = guide_legend(
+            title.position = "top",
+            title.hjust = 0.5,
+            override.aes = list(color = "grey50")
+          )
+        ) +
+        labs(
+          title = "KEGG Pathway Enrichment Analysis",
+          x = "Gene Ratio",
+          y = "KEGG Pathways",
+          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways"),
+          caption = "Dot size represents gene count; Color intensity represents significance"
+        ) +
+        kegg_publication_theme() +
+        theme(
+          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
+          plot.caption = element_text(size = font_size - 2, hjust = 1, margin = margin(t = 10)),
+          legend.box = "horizontal",
+          legend.margin = margin(t = 15)
+        )
+      
+      # Save plots in multiple formats
+      for (format in output_formats) {
+        # Bar plot
+        barplot_file <- file.path(plot_dir, paste0("KO_enrichment_barplot.", format))
+        if (format == "pdf") {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 device = "pdf", useDingbats = FALSE)
+        } else if (format == "svg") {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 device = "svg")
+        } else {
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+                 dpi = dpi, device = format)
+        }
+        
+        # Dot plot
+        dotplot_file <- file.path(plot_dir, paste0("KO_enrichment_dotplot.", format))
+        if (format == "pdf") {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 device = "pdf", useDingbats = FALSE)
+        } else if (format == "svg") {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 device = "svg")
+        } else {
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+                 dpi = dpi, device = format)
+        }
+      }
+      
+      print(paste("KO enrichment completed. Results saved to:", output_path))
+      print(paste("Publication-quality plots saved to:", plot_dir))
+      print(paste("Available formats:", paste(output_formats, collapse = ", ")))
+    } else {
+      print("No significant KEGG pathways found for the given cutoffs")
+    }
+    
+    return(KEGG_result)
+    
+  }, error = function(e) {
+    print(paste("Error in KO enrichment analysis:", e$message))
+    print("This may be due to insufficient gene overlap or data availability")
+    return(NULL)
+  })
+}
+```
+
+### KO Enrichment Analysis: Increased Gene Families
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups_with_enricher(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  data_path = "./Outputs/Eggnog/gene2pathway_name.txt",
+  KEGG_database = "./Outputs/Eggnog/kegg_info.RData",
+  output_path = "./Notebooks/Tables/KO_enrichment_increased_results.tsv",
+  target_ogs = increased_genes_OG,
+  plot_dir = "./Notebooks/Figures/KO_Enrichment/increased_KO_Plots"
+)
+```
+
+### KO Enrichment Analysis: Decreased Gene Families
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups_with_enricher(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  data_path = "./Outputs/Eggnog/gene2pathway_name.txt",
+  KEGG_database = "./Outputs/Eggnog/kegg_info.RData",
+  output_path = "./Notebooks/Tables/KO_enrichment_decreased_results.tsv",
+  target_ogs = decreased_genes_OG,
+  plot_dir = "./Notebooks/Figures/KO_Enrichment/decreased_KO_Plots"
+)
+```
+
+#### NOTEABLE Output
+```
+Out[1]: ✓ Done 2m 48.3s
+[1] "No significant KEGG pathways found for the given cutoffs"
+
+#
+# over-representation test
+#
+#...@organism 	 UNKNOWN 
+#...@ontology 	 UNKNOWN 
+#...@gene 	 chr [1:175377] "ROI15509.1" "ROI15537.1" "ROI15538.1" "ROI15539.1" ...
+#...pvalues adjusted by 'BH' with cutoff <0.05 
+#...0 enriched terms found
+#...Citation
+ T Wu, E Hu, S Xu, M Chen, P Guo, Z Dai, T Feng, L Zhou, W Tang, L Zhan, X Fu, S Liu, X Bo, and G Yu.
+ clusterProfiler 4.0: A universal enrichment tool for interpreting omics data.
+ The Innovation. 2021, 2(3):100141 
+```
+
+### KO Enrichment Analysis: Species-Specific Gene Families
+
+```{r}
+#| vscode: {languageId: r}
+enrich_orthogroups_with_enricher(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  data_path = "./Outputs/Eggnog/gene2pathway_name.txt",
+  KEGG_database = "./Outputs/Eggnog/kegg_info.RData",
+  output_path = "./Notebooks/Tables/KO_enrichment_unique_nonzero_results.tsv",
+  target_ogs = unique_nonzero_genes_OG,
+  plot_dir = "./Notebooks/Figures/KO_Enrichment/unique_nonzero_KO_Plots"
+)
+```
+
+## Quick Test Example
+This section provides a simple test example for GO enrichment analysis using a small set of orthogroups.
+
+```{r}
+#| vscode: {languageId: r}
+# Test with a small set of orthogroups
+test_ogs <- c("OG0001234", "OG0005678", "OG0009101")  # Example orthogroups
+
+# Test GO enrichment function
+test_result <- enrich_orthogroups(
+  input_path = "./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv",
+  ont = "BP",
+  output_path = "./Notebooks/Tables/GO_enrichment_test_results.csv",
+  target_ogs = test_ogs,
+  org_db = org.Alaticeps.eg.db,
+  plot_dir = "./Notebooks/Figures/GO_Enrichment/Test_Plots",
+  p_cutoff = 1.0,  # Relaxed cutoffs for testing
+  q_cutoff = 1.0
+)
+
+if (!is.null(test_result)) {
+  print("Test enrichment analysis completed successfully")
+  print(head(test_result))
+} else {
+  print("Test analysis returned no results - check orthogroup IDs and data paths")
+}
+```
+
+## Summary and Results Organization
+
+The enrichment analysis generates the following outputs:
+
+### GO Enrichment Results
+- **Tables**: `./Notebooks/Tables/GO_enrichment_*_results.csv`
+- **Figures**: `./Notebooks/Figures/GO_Enrichment/*/`
+
+### KO Enrichment Results  
+- **Tables**: `./Notebooks/Tables/KO_enrichment_*_results.tsv`
+- **Figures**: `./Notebooks/Figures/KO_Enrichment/*/`
+
+### Analysis Categories
+1. **Increased gene families**: Gene families expanded in *Aspiorhynchus_laticeps*
+2. **Decreased gene families**: Gene families contracted in *Aspiorhynchus_laticeps*  
+3. **Species-specific families**: Gene families unique to *Aspiorhynchus_laticeps*
+
+## Future Improvements and ToDo Items
+
+- **Dual format output**: Save figures in both PNG and PDF formats for publication flexibility
+- **Statistical summary**: Generate summary statistics for each enrichment category
+- **Interactive plots**: Consider using plotly for interactive visualization
+- **Batch processing**: Implement batch processing for multiple species comparisons
+- **Advanced visualizations**: Add network plots and heatmaps for pathway relationships
+
+## Data Sources and References
+
+- [OrthoFinder Results](./Outputs/OrthoFinder/Results_Apr25/)
+- [Gene Count Data](./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv)
+- [Orthogroups Information](./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.tsv)
+- [EggNOG Annotation Data](./Outputs/Eggnog/)
+
+---
+*This analysis uses the latest OrthoFinder results (Apr 25) and improved error handling for robust enrichment analysis.*

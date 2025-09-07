@@ -1,0 +1,15 @@
+{
+ "argv": [
+  "/opt/conda/envs/env_biopython/bin/python",
+  "-Xfrozen_modules=off",
+  "-m",
+  "ipykernel_launcher",
+  "-f",
+  "{connection_file}"
+ ],
+ "display_name": "Python (Biopython)",
+ "language": "python",
+ "metadata": {
+  "debugger": true
+ }
+}
