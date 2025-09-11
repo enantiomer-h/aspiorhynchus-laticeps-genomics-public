@@ -351,6 +351,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_increased_BP_results.csv",
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_height = 12,
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_BP_Plots"
 )
@@ -366,6 +367,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_increased_MF_results.csv",
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_height = 12,
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_MF_Plots"
 )
@@ -382,6 +384,7 @@ enrich_orthogroups(
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
   plot_height = 12,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_CC_Plots"
 )
 ```
@@ -398,6 +401,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_decreased_BP_results.csv",
   target_ogs = decreased_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_BP_Plots"
 )
 ```
@@ -412,6 +416,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_decreased_MF_results.csv",
   target_ogs = decreased_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_MF_Plots"
 )
 ```
@@ -426,6 +431,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_decreased_CC_results.csv",
   target_ogs = decreased_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/decreased_CC_Plots"
 )
 ```
@@ -442,6 +448,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_BP_results.csv",
   target_ogs = unique_nonzero_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_BP_Plots"
 )
 ```
@@ -456,6 +463,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_MF_results.csv",
   target_ogs = unique_nonzero_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_MF_Plots"
 )
 ```
@@ -470,6 +478,7 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_CC_results.csv",
   target_ogs = unique_nonzero_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_CC_Plots"
 )
 ```

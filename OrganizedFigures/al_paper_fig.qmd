@@ -1,0 +1,129 @@
+---
+title: "AL Paper Figures"
+author: Yuxiang Huang
+date: 2025-09-10
+format:
+  pdf:
+    header-includes: | 
+      \usepackage{xcolor}
+      \usepackage{fvextra}
+      \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+    fig-pos: "H"
+toc: true
+pdf-engine: xelatex
+documentclass: bxjsarticle
+classoption: xelatex,ja=standard
+editor: visual
+indent: true
+# bibliography: references.bib
+---
+
+# Fig1
+
+::: {#fig-tag1 layout="[[-10,80,-10], [-10,80,-10]]"}
+
+
+![Orthogroup statistics showing the total number of orthogroups per species, the proportion of core orthogroups shared among all species, and lineage-specific orthogroups unique to Aspiorhynchus laticeps. ](./Fig1-orthologs-ratio.png){#fig-tag1sub1}
+
+![UpSet plot illustrating shared and unique orthogroups among the twelve species](./Fig1-upset_plot_filtered.png){#fig-tag1sub2}
+
+Orthogroup composition and shared/unique distribution among twelve cypriniform fishes.
+:::
+
+# Fig2-3
+::: {#fig-tag2 layout="[[45,-10,45]]"}
+
+![Heatmap showing orthogroups with markedly higher copy numbers in A. laticeps than in other species, highlighting lineage-specific expansions (e.g. OG0000071, OG0000033, and OG0000140). Moderate expansion (10–40 copies) was observed in A. laticeps, suggesting gradual accumulation under functional constraints, rather than whole-genome duplication.](./Fig2-heatmap_Aspiorhynchus_max_variance_print.png){#fig-tag2sub1}
+
+
+![Heatmap showing the top 50 orthogroups in which A. laticeps exhibited the minimum copy number among all examined species, highlighting gene families that were substantially expanded in other taxa but were highly reduced or absent in A. laticeps.The highest copy number variance across species illustrating major lineage-specific differences and contraction patterns in A. laticeps. ](./Fig3-heatmap_Aspiorhynchus_min_variance_print.png){#fig-tag2sub2}
+
+Expansion and contraction patterns of gene families in Aspiorhynchus laticeps.
+:::
+
+# Fig4
+
+::: {#fig-tag3 layout="[[45,-10,45]]"}
+
+![Heatmap showing orthogroups exclusively present in A. laticeps with non-zero copy numbers, absent in all other examined species, representing potential lineage-specific innovations or retained ancestral genes. ](./Fig4-heatmap_unique_nonzero_Aspiorhynchus_variance_print.png){#fig-tag3sub1}
+
+![Normalised orthogroup overlapping heatmap across all species illustrating the degree of shared orthogroups. A. laticeps shows lower overlap with model cyprinids (e.g. Cyprinus carpio and Carassius auratus), but retains moderate similarity with other cold-adapted taxa, such as Schizothorax macropogon and Triplophysa species.](./Fig4-Orthogroups_SpeciesOverlaps_Normalized_print.png){#fig-tag3sub2}
+
+Lineage-specific orthogroups in Aspiorhynchus laticeps.
+:::
+
+# Fig5
+
+::: {#fig-tag4 layout="[[32,-2,32,-2,32], [32,-2,32,-2,32]]"}
+
+![](./Fig5-BP-increased-GO_enrichment_dotplot.png){#fig-tag4sub1}
+
+![](./Fig5-CC-increased-GO_enrichment_dotplot.png){#fig-tag4sub2}
+
+
+![](./Fig5-MF-increased-GO_enrichment_dotplot.png){#fig-tag4sub3}
+
+![](./Fig5-BP-decreased-GO_enrichment_dotplot.png){#fig-tag4sub4}
+
+![](./Fig5-CC-decreased-GO_enrichment_dotplot.png){#fig-tag4sub5}
+
+![](./Fig5-MF-decreased-GO_enrichment_dotplot.png){#fig-tag4sub6}
+
+GO enrichment of significantly expanded and contracted gene families in Aspiorhynchus laticeps. (A–C) GO terms significantly enriched among the expanded orthogroups in the biological process (BP), cellular component (CC), and molecular function (MF) categories. (D–F) GO terms were significantly enriched among the contracted orthogroups in the BP, CC, and MF categories.
+:::
+
+# Fig7a-c
+::: {#fig-tag5 layout="[[32,-2,32,-2,32]]"}
+
+![GO enrichment in the biological process (BP) category.](./Fig7-BP-unique-GO_enrichment_dotplot.png){#fig-tag5sub1}
+
+![GO enrichment in the cellular component (CC) category. ](./Fig7-CC-unique-GO_enrichment_dotplot.png){#fig-tag5sub2}
+
+![GO enrichment in the molecular function (MF) category.](./Fig7-MF-unique-GO_enrichment_dotplot.png){#fig-tag5sub3}
+
+Functional enrichment analysis of Aspiorhynchus laticeps-specific orthogroups.
+:::
+
+# Fig6,7d
+
+::: {#fig-tag6 layout="[[45,-10,45]]"}
+
+![KEGG pathway enrichment of expanded orthogroups.](./Fig6-KO-increase-KO_enrichment_dotplot.png){#fig-tag6sub1}
+
+![KEGG pathway enrichment of species-specific orthogroups.](./Fig7-KO-unique-KO_enrichment_dotplot.png){#fig-tag6sub2}
+
+KEGG pathway enrichment of significantly expanded and Aspiorhynchus laticeps-specific gene families in Aspiorhynchus laticeps.
+:::
+
+
+# Fig8
+<!-- ::: {#fig-tag7 layout="[[-5,90,-5]]"} -->
+
+![Phylogenetic placement of Aspiorhynchus laticeps. Maximum likelihood tree based on single-copy orthologues from twelve cypriniform fishes, showing A. laticeps clustering with schizothoracine fishes but forming an independent genus-level lineage with a distinct branch length.](./Fig8-SpeciesTree_comparison_Branch_Length_ggtree.png){#fig-tag7sub1}
+
+<!-- ::: -->
+
+# Fig9
+::: {#fig-tag8 layout="[[45,-10,45], [45,-10,45]]"}
+
+![Chromosome length and coverage plot showing high macro-synteny.](./Fig9-bar.PNG){#fig-tag8sub1}
+
+![Circos plot illustrating a one-to-one correspondence with limited inter-chromosomal rearrangements.](./Fig9-circle.PNG){#fig-tag8sub2}
+
+![Dot plot alignment revealing conserved gene order with small inversions. ](./Fig9-dot.PNG){#fig-tag8sub3}
+
+![Parallel link plot confirming predominant one-to-one syntenic relationships.](./Fig9-dual_synteny.PNG){#fig-tag8sub3}
+
+Chromosomal synteny between Aspiorhynchus laticeps and Schizothorax macropogon.
+:::
+
+
+
+
+
+
+
+
+
+
+

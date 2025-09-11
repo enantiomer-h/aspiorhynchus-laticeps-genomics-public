@@ -527,7 +527,8 @@ plot_phylogenetic_tree_ggtree <- function(
             color = tip_label_color,
             offset = tip_label_offset,
             angle = tip_label_angle,
-            hjust = if(tip_label_angle == 0) 0 else 0.5
+            fontface = "italic",  # Italic style for taxonomic nomenclature
+            hjust = if(layout == "rectangular") 1 else if(tip_label_angle == 0) 0 else 0.5
         )
     }
     
@@ -1444,7 +1445,7 @@ def create_publication_heatmap(
         )
         
         # Enhanced label alignment
-        plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline')
+        plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
         plt.setp(ax.get_yticklabels(), ha='right', va='center')
         
         # Add subplot labels if requested
@@ -1660,6 +1661,7 @@ top_variance_data = filter_orthogroups_by_variance(data, top_n=100)
 create_publication_heatmap(
     data=top_variance_data,
     title='Gene Counts Heatmap for Top 100 Orthogroups with Highest Variance',
+    cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_top_variance",
     figsize=(14, 12),
     publication_ready=True
@@ -1684,6 +1686,7 @@ max_count_variance_data, _ = filter_orthogroups_by_species_extreme(
 create_publication_heatmap(
     data=max_count_variance_data,
     title="Gene Counts: 'Aspiorhynchus_laticeps' Maximum Count (Top 50 by Variance)",
+    cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_max_variance",
     figsize=(14, 12),
     publication_ready=True
@@ -1706,6 +1709,7 @@ min_count_variance_data, _ = filter_orthogroups_by_species_extreme(
 create_publication_heatmap(
     data=min_count_variance_data,
     title="Gene Counts: 'Aspiorhynchus_laticeps' Minimum Count (Top 50 by Variance)",
+    cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_min_variance",
     figsize=(14, 12),
     publication_ready=True
@@ -1727,6 +1731,7 @@ species_specific_variance_data, _ = filter_species_specific_orthogroups(
 create_publication_heatmap(
     data=species_specific_variance_data,
     title="Gene Counts: 'Aspiorhynchus_laticeps' Species-Specific (Top 50 by Variance)",
+    cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_unique_nonzero_Aspiorhynchus_variance",
     figsize=(14, 12),
     publication_ready=True
@@ -2084,9 +2089,9 @@ def create_species_overlap_heatmap(
             
             # Enhanced tick styling
             plt.setp(g.ax_heatmap.get_xticklabels(), 
-                    rotation=rotation, ha='right', fontsize=config['tick_size'])
+                    rotation=rotation, ha='right', fontsize=config['tick_size'], fontstyle='italic')
             plt.setp(g.ax_heatmap.get_yticklabels(), 
-                    rotation=0, fontsize=config['tick_size'])
+                    rotation=0, fontsize=config['tick_size'], fontstyle='italic')
             
             # Add statistics if requested
             if show_statistics:
@@ -2156,9 +2161,9 @@ def create_species_overlap_heatmap(
                 width=1.5
             )
             
-            # Enhanced label alignment
-            plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline')
-            plt.setp(ax.get_yticklabels(), ha='right', va='center')
+            # Enhanced label alignment with italic species names
+            plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
+            plt.setp(ax.get_yticklabels(), ha='right', va='center', fontstyle='italic')
             
             # Add subplot labels if requested
             if add_subplot_labels:
@@ -2269,6 +2274,7 @@ file_path = './Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics
 overlap_data = create_species_overlap_heatmap(
     file_path=file_path,
     save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps",
+    cmap='coolwarm',
     normalize=False,
     figsize=(12, 10),
     publication_ready=True
@@ -2291,6 +2297,7 @@ print(f"Standard deviation: {stats['std_overlap']:.2f}")
 create_species_overlap_heatmap(
     file_path=file_path,
     save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps_Normalized",
+    cmap='coolwarm',
     normalize=True,
     figsize=(12, 10),
     publication_ready=True
@@ -2370,7 +2377,13 @@ def create_gene_orthogroup_ratio_plot(
         # Set default colors if none provided
         if colors is None:
             # Use a professional color palette
-            colors = ['#2E4057', '#048A81', '#54C6EB', '#F18F01', '#C73E1D', '#A8DADC', '#457B9D']
+            # colors = ['#2E4057', '#048A81', '#54C6EB', '#F18F01', '#C73E1D', '#A8DADC', '#457B9D']
+            # colors = ['#264653', '#2A9D8F', '#E9C46A', '#F4A261', '#E76F51', '#F8F9FA', '#495057']
+            # colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#6C5CE7'] #Better: Vibrant Harmony
+            # colors = ['#0F3460', '#16537e', '#1A659E', '#00A8CC', '#7DD3FC', '#B3E5FC', '#E1F5FE']
+            colors = ['#2D1B69', '#11998E', '#38EF7D', '#FFB75E', '#ED4A7B', '#945ECF', '#13547A'] #Better: Sunset Palette
+            # colors = ['#2E3440', '#3B4252', '#5E81AC', '#88C0D0', '#8FBCBB', '#D8DEE9', '#ECEFF4']
+            # colors = ['#1B4332', '#2D6A4F', '#40916C', '#52B788', '#74C69D', '#95D5B2', '#B7E4C7']
         
         # Create the plot
         fig, ax = plt.subplots(figsize=figsize)
@@ -2422,6 +2435,7 @@ def create_gene_orthogroup_ratio_plot(
         ax.set_xlabel(xlabel, fontsize=14)
         ax.set_ylabel(ylabel, fontsize=14)
         ax.tick_params(axis='x', rotation=rotation, labelsize=12)
+        plt.setp(ax.get_xticklabels(), fontstyle='italic', va='center_baseline')
         ax.tick_params(axis='y', labelsize=12)
         
         # Enhance legend
@@ -2787,8 +2801,18 @@ def create_publication_upset_plot(
     - tuple: (combination_counts, original_data)
     """
     try:
-        # Load the one-hot encoded orthogroups data
-        data = pd.read_csv(file_path, sep='\t', index_col='Orthogroup')
+        # Load the data and check for correct format
+        data_raw = pd.read_csv(file_path, sep='\t')
+        
+        # Check if 'Orthogroup' column exists
+        if 'Orthogroup' not in data_raw.columns:
+            available_cols = list(data_raw.columns[:5])  # Show first 5 columns
+            raise ValueError(f"File does not contain 'Orthogroup' column. "
+                           f"Available columns: {available_cols}. "
+                           f"Please use a one-hot encoded orthogroups file (e.g., one-hot-orthogroups-geen-count.tsv).")
+        
+        # Set Orthogroup as index
+        data = data_raw.set_index('Orthogroup')
         
         # Convert data to boolean
         data_bool = data.astype(bool)
@@ -2831,6 +2855,20 @@ def create_publication_upset_plot(
         fig = plt.figure(figsize=figsize)
         upset = UpSet(combination_counts, **upset_params)
         upset.plot(fig=fig)
+        
+        # Style species names (category labels) with italic font
+        # Find the category axis (typically the leftmost axis in UpSet plots)
+        for ax in fig.axes:
+            # Check if this axis has category labels (species names)
+            if hasattr(ax, 'get_yticklabels') and len(ax.get_yticklabels()) > 0:
+                # Get the tick labels and check if they match our species names
+                tick_labels = [label.get_text() for label in ax.get_yticklabels()]
+                # If tick labels contain species names (non-empty and contain underscores typical of species names)
+                if any('_' in label or len(label) > 3 for label in tick_labels if label):
+                    # Apply italic font style to species names
+                    for label in ax.get_yticklabels():
+                        if label.get_text():  # Only modify non-empty labels
+                            label.set_fontstyle('italic')
         
         # Set title
         if title is None:
@@ -2971,10 +3009,10 @@ def create_upset_summary_plot(
 
 ```{python}
 # Create comprehensive UpSet plot with all intersections
-file_path = './Notebooks/Tables/one-hot-orthogroups-geen-count.tsv'
+upset_file_path = './Notebooks/Tables/one-hot-orthogroups-geen-count.tsv'
 
 combination_counts, original_data = create_publication_upset_plot(
-    file_path=file_path,
+    file_path=upset_file_path,
     save_path="./Notebooks/Figures/upset_plot",
     min_subset_size=None,
     # figsize=(16, 12),
@@ -2999,7 +3037,7 @@ print(f"Median intersection size: {stats['median_intersection_size']:.1f}")
 ```{python}
 # Create filtered UpSet plot (minimum subset size of 50)
 create_publication_upset_plot(
-    file_path=file_path,
+    file_path=upset_file_path,
     save_path="./Notebooks/Figures/upset_plot_filtered",
     min_subset_size=50,
     # figsize=(16, 12),

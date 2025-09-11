@@ -847,8 +847,8 @@ c = get_config()  #noqa
 ## The name of the default kernel to start
 #  Default: 'python3'
 # c.MultiKernelManager.default_kernel_name = 'python3'
-c.MultiKernelManager.default_kernel_name = 'env_biopython'
-# c.MultiKernelManager.default_kernel_name = 'ir_clusterprofiler_4100_env'
+# c.MultiKernelManager.default_kernel_name = 'env_biopython'
+c.MultiKernelManager.default_kernel_name = 'ir_clusterprofiler_4100_env'
 
 ## The kernel manager class.  This is configurable to allow
 #          subclassing of the KernelManager for customized behavior.
