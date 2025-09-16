@@ -130,7 +130,7 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
                               p_cutoff=0.01, q_cutoff=0.05, 
                               # Publication-quality plot parameters
                               show_category=20, plot_width=12, plot_height=8, 
-                              font_size=12, title_size=14, axis_title_size=13,
+                              font_size=18, title_size=22, axis_title_size=20,
                               color_palette="viridis", output_formats=c("png", "pdf"),
                               dpi=300, theme_style="publication") {
   
@@ -202,12 +202,12 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
           plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, margin = margin(b = 20)),
           axis.title.x = element_text(size = axis_title_size, face = "bold", margin = margin(t = 15)),
           axis.title.y = element_text(size = axis_title_size, face = "bold", margin = margin(r = 15)),
-          axis.text.x = element_text(size = font_size - 1, color = "black"),
-          axis.text.y = element_text(size = font_size - 1, color = "black", hjust = 1),
+          axis.text.x = element_text(size = font_size, color = "black"),
+          axis.text.y = element_text(size = font_size, color = "black", hjust = 1),
           
           # Legend
-          legend.title = element_text(size = font_size, face = "bold"),
-          legend.text = element_text(size = font_size - 1),
+          legend.title = element_text(size = font_size + 2, face = "bold"),
+          legend.text = element_text(size = font_size),
           legend.position = "right",
           legend.margin = margin(l = 20),
           legend.key.size = unit(0.8, "cm"),
@@ -270,8 +270,8 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
         ) +
         publication_theme() +
         theme(
-          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size - 2),
-          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15))
+          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size),
+          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15))
         )
       
       # Enhanced Dot plot  
@@ -288,8 +288,8 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
         ) +
         publication_theme() +
         theme(
-          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size - 2),
-          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
+          axis.text.y = element_text(angle = 0, hjust = 1, size = font_size),
+          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15)),
           legend.box = "horizontal",
           legend.margin = margin(t = 10)
         )
@@ -352,7 +352,8 @@ enrich_orthogroups(
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
   color_palette="Set2",
-  plot_height = 12,
+  plot_height = 18,
+  plot_width= 18,
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_BP_Plots"
 )
 ```
@@ -368,7 +369,8 @@ enrich_orthogroups(
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
   color_palette="Set2",
-  plot_height = 12,
+  plot_height = 28,
+  plot_width= 28,
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_MF_Plots"
 )
 ```
@@ -384,6 +386,7 @@ enrich_orthogroups(
   target_ogs = increased_genes_OG,
   org_db = org.Alaticeps.eg.db,
   plot_height = 12,
+  plot_width = 12,
   color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/Increased_CC_Plots"
 )
@@ -449,6 +452,8 @@ enrich_orthogroups(
   target_ogs = unique_nonzero_genes_OG,
   org_db = org.Alaticeps.eg.db,
   color_palette="Set2",
+  plot_height = 24,
+  plot_width = 24,
   plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_BP_Plots"
 )
 ```
@@ -463,6 +468,8 @@ enrich_orthogroups(
   output_path = "./Notebooks/Tables/GO_enrichment_unique_nonzero_MF_results.csv",
   target_ogs = unique_nonzero_genes_OG,
   org_db = org.Alaticeps.eg.db,
+  plot_height = 16,
+  plot_width = 16,
   color_palette="Set2",
   plot_dir = "./Notebooks/Figures/GO_Enrichment/unique_nonzero_MF_Plots"
 )
@@ -495,7 +502,7 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
                                             p_cutoff=0.05, q_cutoff=0.05, min_gs_size=1,
                                             # Publication-quality plot parameters
                                             show_category=20, plot_width=14, plot_height=10, 
-                                            font_size=12, title_size=14, axis_title_size=13,
+                                            font_size=18, title_size=22, axis_title_size=20,
                                             color_palette="Set2", output_formats=c("png", "pdf"),
                                             dpi=300, theme_style="publication") {
   
@@ -577,8 +584,8 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
           axis.text.y = element_text(size = font_size - 2, color = "black", hjust = 1),
           
           # Legend
-          legend.title = element_text(size = font_size, face = "bold"),
-          legend.text = element_text(size = font_size - 1),
+          legend.title = element_text(size = font_size + 2, face = "bold"),
+          legend.text = element_text(size = font_size),
           legend.position = "right",
           legend.margin = margin(l = 20),
           legend.key.size = unit(0.8, "cm"),
@@ -655,8 +662,8 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
         ) +
         kegg_publication_theme() +
         theme(
-          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
-          plot.caption = element_text(size = font_size - 2, hjust = 1, margin = margin(t = 10))
+          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15)),
+          plot.caption = element_text(size = font_size, hjust = 1, margin = margin(t = 10))
         )
       
       # Enhanced Dot plot with GeneRatio
@@ -689,8 +696,8 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
         ) +
         kegg_publication_theme() +
         theme(
-          plot.subtitle = element_text(size = font_size, hjust = 0.5, margin = margin(b = 15)),
-          plot.caption = element_text(size = font_size - 2, hjust = 1, margin = margin(t = 10)),
+          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15)),
+          plot.caption = element_text(size = font_size, hjust = 1, margin = margin(t = 10)),
           legend.box = "horizontal",
           legend.margin = margin(t = 15)
         )
@@ -751,6 +758,8 @@ enrich_orthogroups_with_enricher(
   KEGG_database = "./Outputs/Eggnog/kegg_info.RData",
   output_path = "./Notebooks/Tables/KO_enrichment_increased_results.tsv",
   target_ogs = increased_genes_OG,
+  plot_width = 16,
+  plot_height = 16,
   plot_dir = "./Notebooks/Figures/KO_Enrichment/increased_KO_Plots"
 )
 ```

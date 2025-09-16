@@ -51,9 +51,9 @@ def plot_phylogenetic_tree_with_lengths(
     figsize=(14, 10), 
     branch_label_precision=3,
     title=None,
-    title_fontsize=16,
-    label_fontsize=12,
-    branch_label_fontsize=9,
+    title_fontsize=22,
+    label_fontsize=18,
+    branch_label_fontsize=14,
     branch_color='#2E4057',
     label_color='#1A1A1A',
     background_color='white',
@@ -245,9 +245,9 @@ plot_phylogenetic_tree_with_lengths(
     figsize=(16, 12),
     branch_label_precision=4,
     title="Species Phylogenetic Tree (Rooted)",
-    title_fontsize=18,
-    label_fontsize=14,
-    branch_label_fontsize=10,
+    title_fontsize=24,
+    label_fontsize=20,
+    branch_label_fontsize=16,
     branch_color='#2E4057',
     label_color='#1A1A1A',
     show_scale_bar=True,
@@ -267,9 +267,9 @@ plot_phylogenetic_tree_with_lengths(
     figsize=(16, 12),
     branch_label_precision=3,
     title="Species Phylogenetic Tree with Node Labels",
-    title_fontsize=18,
-    label_fontsize=14,
-    branch_label_fontsize=10,
+    title_fontsize=24,
+    label_fontsize=20,
+    branch_label_fontsize=16,
     branch_color='#2E4057',
     label_color='#1A1A1A',
     show_scale_bar=True,
@@ -289,9 +289,9 @@ plot_phylogenetic_tree_with_lengths(
     figsize=(16, 12),
     branch_label_precision=3,
     title="Species Tree with Gene Duplication Events (≥50% Support)",
-    title_fontsize=18,
-    label_fontsize=14,
-    branch_label_fontsize=10,
+    title_fontsize=24,
+    label_fontsize=20,
+    branch_label_fontsize=16,
     branch_color='#8B4513',  # Brown color to distinguish duplication events
     label_color='#1A1A1A',
     show_scale_bar=True,
@@ -409,18 +409,18 @@ plot_phylogenetic_tree_ggtree <- function(
     
     # Label options
     show_tip_labels = TRUE,
-    tip_label_size = 12,
+    tip_label_size = 18,
     tip_label_color = "#1A1A1A",
     tip_label_offset = 0.1,
     tip_label_angle = 0,
     
     # Branch length and support options
     show_branch_length = FALSE,
-    branch_length_size = 8,
+    branch_length_size = 14,
     branch_length_color = "#666666",
     branch_length_digits = 3,
     show_node_support = FALSE,
-    node_support_size = 8,
+    node_support_size = 14,
     
     # Scale and axes
     show_scale_bar = TRUE,
@@ -429,7 +429,7 @@ plot_phylogenetic_tree_ggtree <- function(
     
     # Title and theme options
     title = NULL,
-    title_size = 16,
+    title_size = 22,
     plot_width = 14,
     plot_height = 10,
     
@@ -565,7 +565,7 @@ plot_phylogenetic_tree_ggtree <- function(
             y = if(scale_bar_position %in% c("bottomleft", "bottomright")) 1 else length(tree$tip.label),
             width = scale_length,
             color = branch_color,
-            fontsize = 3
+            fontsize = 6  # Increased from 3 to 6 for better readability
         )
     }
     
@@ -603,8 +603,11 @@ plot_phylogenetic_tree_ggtree <- function(
                 panel.background = element_rect(fill = background_color, color = NA),
                 legend.background = element_rect(fill = background_color, color = NA),
                 text = element_text(family = "serif"),
-                axis.title = element_text(size = 12),
-                axis.text = element_text(size = 10)
+                axis.title = element_text(size = 18),  # Increased from 12 to 18
+                axis.text = element_text(size = 16),   # Increased from 10 to 16
+                legend.title = element_text(size = 18, face = "bold"),  # Added explicit legend title size
+                legend.text = element_text(size = 16),   # Added explicit legend text size
+                legend.key.size = unit(1.2, "lines")    # Increased legend key size for better visibility
             ) +
             labs(title = title)
     } else if (theme_style == "minimal") {
@@ -612,11 +615,19 @@ plot_phylogenetic_tree_ggtree <- function(
             theme_minimal() +
             theme(
                 plot.title = element_text(size = title_size, face = "bold", hjust = 0.5),
-                plot.background = element_rect(fill = background_color, color = NA)
+                plot.background = element_rect(fill = background_color, color = NA),
+                legend.title = element_text(size = 16, face = "bold"),  # Added explicit legend title size
+                legend.text = element_text(size = 14),   # Added explicit legend text size
+                legend.key.size = unit(1.1, "lines")    # Increased legend key size
             ) +
             labs(title = title)
     } else {
         p <- p + theme_tree() +
+            theme(
+                legend.title = element_text(size = 14, face = "bold"),  # Added explicit legend title size
+                legend.text = element_text(size = 12),   # Added explicit legend text size
+                legend.key.size = unit(1.0, "lines")    # Added legend key size
+            ) +
             labs(title = title)
     }
     
@@ -695,6 +706,7 @@ create_tree_comparison_plots <- function(newick_file_path, save_base_path = NULL
             newick_file_path = newick_file_path,
             color_scheme = scheme_info$scheme,
             color_palette = scheme_info$palette,
+            tip_label_size = 20,
             title = paste("Tree Visualization:", scheme_info$name),
             save_path = if(!is.null(save_base_path)) paste0(save_base_path, "_", scheme_info$name) else NULL
         )
@@ -723,11 +735,11 @@ p_rooted_colorful <- plot_phylogenetic_tree_ggtree(
     branch_size = 1.5,
     tip_size = 5,
     show_tip_labels = TRUE,
-    tip_label_size = 14,
+    tip_label_size = 20,
     tip_label_offset = 0.01,
     show_scale_bar = TRUE,
     title = "Species Phylogenetic Tree (Rooted) - Colorful Clades",
-    title_size = 18,
+    title_size = 24,
     plot_width = 16,
     plot_height = 12,
     theme_style = "publication",
@@ -750,9 +762,9 @@ p_circular <- plot_circular_tree_ggtree(
     branch_size = 1.2,
     tip_size = 6,
     show_tip_labels = TRUE,
-    tip_label_size = 12,
+    tip_label_size = 18,
     title = "Species Phylogenetic Tree - Circular Layout (Plasma Colors)",
-    title_size = 16,
+    title_size = 22,
     plot_width = 14,
     plot_height = 14,
     save_path = "./Notebooks/Figures/SpeciesTree_circular_plasma",
@@ -772,12 +784,12 @@ p_fan_gradient <- plot_fan_tree_ggtree(
     branch_size = 1.0,
     tip_size = 4,
     show_tip_labels = TRUE,
-    tip_label_size = 10,
+    tip_label_size = 16,
     tip_label_angle = 0,
     show_branch_length = TRUE,
     branch_length_digits = 3,
     title = "Species Tree - Fan Layout with Branch Length Gradient",
-    title_size = 16,
+    title_size = 22,
     plot_width = 14,
     plot_height = 14,
     save_path = "./Notebooks/Figures/SpeciesTree_fan_gradient",
@@ -802,13 +814,13 @@ p_gene_dup <- plot_phylogenetic_tree_ggtree(
     branch_size = 1.8,
     tip_size = 5,
     show_tip_labels = TRUE,
-    tip_label_size = 14,
+    tip_label_size = 20,
     show_node_support = TRUE,
-    node_support_size = 10,
+    node_support_size = 16,
     show_branch_length = TRUE,
     branch_length_digits = 3,
     title = "Species Tree with Gene Duplication Events - Enhanced ggtree",
-    title_size = 18,
+    title_size = 24,
     plot_width = 18,
     plot_height = 12,
     theme_style = "publication",
@@ -848,15 +860,15 @@ p_advanced <- plot_phylogenetic_tree_ggtree(
     branch_size = 2.0,
     tip_size = 6,
     show_tip_labels = TRUE,
-    tip_label_size = 16,
+    tip_label_size = 22,
     tip_label_offset = 0.005,
     show_node_support = TRUE,
-    node_support_size = 12,
+    node_support_size = 18,
     show_branch_length = TRUE,
     branch_length_digits = 4,
     show_scale_bar = TRUE,
     title = "Advanced Species Tree - Multi-Annotated Visualization",
-    title_size = 20,
+    title_size = 26,
     plot_width = 20,
     plot_height = 14,
     theme_style = "publication",
@@ -1197,41 +1209,41 @@ def create_publication_heatmap(
         'nature': {
             'font_family': 'sans-serif',
             'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
-            'title_size': int(14 * font_scale),
-            'label_size': int(12 * font_scale),
-            'tick_size': int(10 * font_scale),
+            'title_size': int(20 * font_scale),
+            'label_size': int(18 * font_scale),
+            'tick_size': int(16 * font_scale),
             'cmap_default': 'viridis'
         },
         'science': {
             'font_family': 'serif',
             'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-            'title_size': int(16 * font_scale),
-            'label_size': int(14 * font_scale),
-            'tick_size': int(12 * font_scale),
+            'title_size': int(22 * font_scale),
+            'label_size': int(20 * font_scale),
+            'tick_size': int(18 * font_scale),
             'cmap_default': 'plasma'
         },
         'cell': {
             'font_family': 'sans-serif',
             'font_sans': ['Arial', 'Helvetica', 'DejaVu Sans'],
-            'title_size': int(15 * font_scale),
-            'label_size': int(13 * font_scale),
-            'tick_size': int(11 * font_scale),
+            'title_size': int(21 * font_scale),
+            'label_size': int(19 * font_scale),
+            'tick_size': int(17 * font_scale),
             'cmap_default': 'cell_green'
         },
         'plos': {
             'font_family': 'serif',
             'font_serif': ['Liberation Serif', 'Times New Roman', 'DejaVu Serif'],
-            'title_size': int(14 * font_scale),
-            'label_size': int(12 * font_scale),
-            'tick_size': int(10 * font_scale),
+            'title_size': int(20 * font_scale),
+            'label_size': int(18 * font_scale),
+            'tick_size': int(16 * font_scale),
             'cmap_default': 'plos_orange'
         },
         'generic': {
             'font_family': 'serif',
             'font_serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-            'title_size': int(16 * font_scale),
-            'label_size': int(14 * font_scale),
-            'tick_size': int(12 * font_scale),
+            'title_size': int(22 * font_scale),
+            'label_size': int(20 * font_scale),
+            'tick_size': int(18 * font_scale),
             'cmap_default': 'viridis'
         }
     }
@@ -1688,7 +1700,7 @@ create_publication_heatmap(
     title="Gene Counts: 'Aspiorhynchus_laticeps' Maximum Count (Top 50 by Variance)",
     cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_max_variance",
-    figsize=(14, 12),
+    figsize=(16, 16),
     publication_ready=True
 )
 ```
@@ -1711,7 +1723,7 @@ create_publication_heatmap(
     title="Gene Counts: 'Aspiorhynchus_laticeps' Minimum Count (Top 50 by Variance)",
     cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_min_variance",
-    figsize=(14, 12),
+    figsize=(16, 16),
     publication_ready=True
 )
 ```
@@ -1733,7 +1745,7 @@ create_publication_heatmap(
     title="Gene Counts: 'Aspiorhynchus_laticeps' Species-Specific (Top 50 by Variance)",
     cmap='coolwarm',
     save_path="./Notebooks/Figures/heatmap_unique_nonzero_Aspiorhynchus_variance",
-    figsize=(14, 12),
+    figsize=(16, 16),
     publication_ready=True
 )
 ```
@@ -2369,7 +2381,7 @@ def create_gene_orthogroup_ratio_plot(
             plt.rcParams.update({
                 'font.family': 'serif',
                 'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-                'font.size': 12,
+                'font.size': 18,
                 'axes.linewidth': 1.2,
                 'figure.facecolor': 'white'
             })
@@ -2431,18 +2443,41 @@ def create_gene_orthogroup_ratio_plot(
                 title = 'Gene and Orthogroup Trends per Species'
         
         # Styling
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel(xlabel, fontsize=14)
-        ax.set_ylabel(ylabel, fontsize=14)
-        ax.tick_params(axis='x', rotation=rotation, labelsize=12)
-        plt.setp(ax.get_xticklabels(), fontstyle='italic', va='center_baseline')
-        ax.tick_params(axis='y', labelsize=12)
+        ax.set_title(title, fontsize=22, fontweight='bold', pad=20)
+        ax.set_xlabel(xlabel, fontsize=20)
+        ax.set_ylabel(ylabel, fontsize=20)
+        
+        # Advanced tick customization (matching heatmap style)
+        ax.tick_params(
+            axis='x', 
+            rotation=rotation, 
+            labelsize=18,
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        ax.tick_params(
+            axis='y', 
+            rotation=0, 
+            labelsize=18,
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        
+        # Enhanced label alignment with italic species names
+        plt.setp(ax.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
+        plt.setp(ax.get_yticklabels(), ha='right', va='center')
         
         # Enhance legend
         legend = ax.legend(
             title='Metrics',
-            title_fontsize=12,
-            fontsize=11,
+            title_fontsize=18,
+            fontsize=16,
             bbox_to_anchor=(1.05, 1),
             loc='upper left',
             frameon=True,
@@ -2510,7 +2545,7 @@ def create_comparative_ratio_plot(
         plt.rcParams.update({
             'font.family': 'serif',
             'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-            'font.size': 12,
+            'font.size': 18,
             'axes.linewidth': 1.2,
             'figure.facecolor': 'white'
         })
@@ -2557,26 +2592,38 @@ def create_comparative_ratio_plot(
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
             )
         
-        ax1.set_xlabel(gene_col, fontsize=12)
-        ax1.set_ylabel(ortho_col, fontsize=12)
-        ax1.set_title('Genes vs Orthogroups Containing Species', fontsize=14, fontweight='bold')
+        ax1.set_xlabel(gene_col, fontsize=18)
+        ax1.set_ylabel(ortho_col, fontsize=18)
+        ax1.set_title('Genes vs Orthogroups Containing Species', fontsize=20, fontweight='bold')
         ax1.grid(True, alpha=0.3)
         
         # Calculate and display correlation
         correlation = data[gene_col].corr(data[ortho_col])
         ax1.text(0.05, 0.95, f'Correlation: {correlation:.3f}', 
-                transform=ax1.transAxes, fontsize=11,
+                transform=ax1.transAxes, fontsize=16,
                 bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
     else:
         # Fallback: show top statistics
         top_stats = data.iloc[:, :2] if len(data.columns) >= 2 else data.iloc[:, :1]
         ax1.bar(range(len(data.index)), top_stats.iloc[:, 0], 
                color='#2E4057', alpha=0.8, edgecolor='white', linewidth=1)
-        ax1.set_title('Primary Statistic by Species', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Species', fontsize=12)
-        ax1.set_ylabel(top_stats.columns[0], fontsize=12)
+        ax1.set_title('Primary Statistic by Species', fontsize=20, fontweight='bold')
+        ax1.set_xlabel('Species', fontsize=18)
+        ax1.set_ylabel(top_stats.columns[0], fontsize=18)
         ax1.set_xticks(range(len(data.index)))
         ax1.set_xticklabels(data.index, rotation=45, ha='right')
+        # Apply consistent tick styling
+        ax1.tick_params(
+            axis='x', 
+            rotation=45, 
+            labelsize=18,
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        plt.setp(ax1.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
     
     # Plot 2: Gene/Orthogroup ratio bar plot
     if gene_col and ortho_col:
@@ -2585,28 +2632,52 @@ def create_comparative_ratio_plot(
         bars = ax2.bar(range(len(ratio)), ratio.values, 
                       color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
         
-        ax2.set_xlabel('Species', fontsize=12)
-        ax2.set_ylabel('Gene/Orthogroup Ratio', fontsize=12)
-        ax2.set_title('Gene to Orthogroup Ratio', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Species', fontsize=18)
+        ax2.set_ylabel('Gene/Orthogroup Ratio', fontsize=18)
+        ax2.set_title('Gene to Orthogroup Ratio', fontsize=20, fontweight='bold')
         ax2.set_xticks(range(len(ratio)))
         ax2.set_xticklabels(data.index, rotation=45, ha='right')
+        # Apply consistent tick styling
+        ax2.tick_params(
+            axis='x', 
+            rotation=45, 
+            labelsize=18,
+            pad=8,
+            colors='#333333',
+            which='major',
+            length=6,
+            width=1.2
+        )
+        plt.setp(ax2.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
         ax2.grid(True, alpha=0.3, axis='y')
         
         # Add value labels on bars
         for i, (bar, value) in enumerate(zip(bars, ratio.values)):
             ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(ratio)*0.02,
-                    f'{value:.1f}', ha='center', va='bottom', fontsize=10)
+                    f'{value:.1f}', ha='center', va='bottom', fontsize=16)
     else:
         # Fallback: show distribution of a key statistic
         if len(data.columns) > 0:
             stat_col = data.columns[0]
             bars = ax2.bar(range(len(data.index)), data[stat_col].values,
                           color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
-            ax2.set_xlabel('Species', fontsize=12)
-            ax2.set_ylabel(stat_col, fontsize=12)
-            ax2.set_title(f'{stat_col} by Species', fontsize=14, fontweight='bold')
+            ax2.set_xlabel('Species', fontsize=18)
+            ax2.set_ylabel(stat_col, fontsize=18)
+            ax2.set_title(f'{stat_col} by Species', fontsize=20, fontweight='bold')
             ax2.set_xticks(range(len(data.index)))
             ax2.set_xticklabels(data.index, rotation=45, ha='right')
+            # Apply consistent tick styling
+            ax2.tick_params(
+                axis='x', 
+                rotation=45, 
+                labelsize=18,
+                pad=8,
+                colors='#333333',
+                which='major',
+                length=6,
+                width=1.2
+            )
+            plt.setp(ax2.get_xticklabels(), ha='right', va='center_baseline', fontstyle='italic')
             ax2.grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
@@ -2829,7 +2900,8 @@ def create_publication_upset_plot(
             plt.rcParams.update({
                 'font.family': 'serif',
                 'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-                'font.size': 12,
+                # 'font.size': 12,
+                'font.size': 20,
                 'axes.linewidth': 1.2,
                 'figure.facecolor': 'white'
             })
@@ -2869,6 +2941,7 @@ def create_publication_upset_plot(
                     for label in ax.get_yticklabels():
                         if label.get_text():  # Only modify non-empty labels
                             label.set_fontstyle('italic')
+                            label.set_fontsize(20)
         
         # Set title
         if title is None:
@@ -2884,7 +2957,7 @@ def create_publication_upset_plot(
                 title = 'UpSet Plot of Orthogroups (All Sets)'
         
         # Add title
-        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
+        fig.suptitle(title, fontsize=26, fontweight='bold', y=0.98)
         
         # Adjust layout
         plt.tight_layout()
@@ -2958,7 +3031,7 @@ def create_upset_summary_plot(
         plt.rcParams.update({
             'font.family': 'serif',
             'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
-            'font.size': 12,
+            'font.size': 18,
             'axes.linewidth': 1.2,
             'figure.facecolor': 'white'
         })
@@ -2971,9 +3044,9 @@ def create_upset_summary_plot(
     
     bars1 = ax1.bar(range(len(species_names)), species_counts, 
                    color='#2E4057', alpha=0.8, edgecolor='white', linewidth=1)
-    ax1.set_title('Orthogroups per Species', fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Species', fontsize=12)
-    ax1.set_ylabel('Number of Orthogroups', fontsize=12)
+    ax1.set_title('Orthogroups per Species', fontsize=20, fontweight='bold')
+    ax1.set_xlabel('Species', fontsize=18)
+    ax1.set_ylabel('Number of Orthogroups', fontsize=18)
     ax1.set_xticks(range(len(species_names)))
     ax1.set_xticklabels(species_names, rotation=45, ha='right')
     ax1.grid(True, alpha=0.3, axis='y')
@@ -2981,7 +3054,7 @@ def create_upset_summary_plot(
     # Add value labels on bars
     for bar, count in zip(bars1, species_counts):
         ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(species_counts)*0.01,
-                str(count), ha='center', va='bottom', fontsize=10)
+                str(count), ha='center', va='bottom', fontsize=16)
     
     # Plot 2: Degree distribution
     degrees = list(stats['degree_distribution'].keys())
@@ -2989,15 +3062,15 @@ def create_upset_summary_plot(
     
     bars2 = ax2.bar(degrees, degree_counts, 
                    color='#048A81', alpha=0.8, edgecolor='white', linewidth=1)
-    ax2.set_title('Intersection Degree Distribution', fontsize=14, fontweight='bold')
-    ax2.set_xlabel('Intersection Degree (Number of Species)', fontsize=12)
-    ax2.set_ylabel('Number of Orthogroups', fontsize=12)
+    ax2.set_title('Intersection Degree Distribution', fontsize=20, fontweight='bold')
+    ax2.set_xlabel('Intersection Degree (Number of Species)', fontsize=18)
+    ax2.set_ylabel('Number of Orthogroups', fontsize=18)
     ax2.grid(True, alpha=0.3, axis='y')
     
     # Add value labels on bars
     for bar, count in zip(bars2, degree_counts):
         ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(degree_counts)*0.01,
-                str(count), ha='center', va='bottom', fontsize=10)
+                str(count), ha='center', va='bottom', fontsize=16)
     
     plt.tight_layout()
     plt.savefig(f"{save_path}_summary.png", dpi=300, bbox_inches='tight')
@@ -3039,10 +3112,10 @@ print(f"Median intersection size: {stats['median_intersection_size']:.1f}")
 create_publication_upset_plot(
     file_path=upset_file_path,
     save_path="./Notebooks/Figures/upset_plot_filtered",
-    min_subset_size=50,
+    min_subset_size=100,
     # figsize=(16, 12),
-    figsize=(45, 15),
-    title='UpSet Plot of Orthogroups (Filtered: Min Size 50)',
+    figsize=(42, 10),
+    title='UpSet Plot of Orthogroups (Filtered: Min Size 100)',
     publication_ready=True
 )
 ```
