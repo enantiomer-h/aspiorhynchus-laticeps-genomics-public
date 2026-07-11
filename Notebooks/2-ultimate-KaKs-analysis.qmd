@@ -1,0 +1,2868 @@
+---
+title: Ka/Ks (dN/dS) Selection Analysis
+subtitle: Identifying genes under positive and purifying selection in cypriniform fishes
+jupyter:
+  kernelspec:
+    display_name: Python (PAML)
+    language: python
+    name: env_paml
+---
+
+## Project Overview
+
+This notebook performs **Ka/Ks (dN/dS) ratio analysis** to identify genes under selection pressure in *Aspiorhynchus laticeps* compared to other cypriniform fishes.
+
+### What is Ka/Ks?
+
+Ka/Ks (also called dN/dS or ω) is the ratio of non-synonymous to synonymous substitution rates:
+
+- **Ka (dN)**: Non-synonymous substitution rate (changes amino acid)
+- **Ks (dS)**: Synonymous substitution rate (silent mutations)
+- **Ka/Ks < 1**: Purifying selection (functional constraint)
+- **Ka/Ks ≈ 1**: Neutral evolution
+- **Ka/Ks > 1**: Positive selection (adaptive evolution)
+
+### Analysis Strategy
+
+1. **Pairwise Ka/Ks (yn00)**: Fast screening across all CAFE-significant families
+2. **Branch model (codeml)**: Test A. laticeps branch for accelerated evolution
+3. **Integration with CAFE**: Identify expanded/contracted families under selection
+
+### Prerequisites
+
+This notebook requires outputs from:
+
+1. **OrthoFinder** (Notebook 2): Orthogroups and protein alignments
+2. **CAFE5** (Notebook 2-CAFE): Significantly evolving gene families
+3. **Phylogenetic Tree** (Notebook 2-PhylogeneticTree): Species tree
+
+### Citation
+
+```
+Yang Z. (2007). PAML 4: Phylogenetic Analysis by Maximum Likelihood.
+Molecular Biology and Evolution 24(8):1586-1591.
+doi: 10.1093/molbev/msm088
+```
+
+## 1. Environment Setup
+
+### 1.1 Create PAML Conda Environment
+
+First, create the conda environment with PAML and related tools:
+
+```{python}
+import subprocess
+import os
+import sys
+
+# Check if env_paml already exists
+result = subprocess.run(["conda", "env", "list"], capture_output=True, text=True)
+if "env_paml" in result.stdout:
+    print("env_paml environment already exists!")
+else:
+    print("Creating env_paml environment...")
+    print("This may take a few minutes...")
+    # Create environment from YAML file
+    env_file = "../env/env_paml.yml"
+    if os.path.exists(env_file):
+        subprocess.run(["mamba", "env", "create", "-f", env_file], check=True)
+    else:
+        # Create manually if YAML not found
+        subprocess.run([
+            "mamba", "create", "-n", "env_paml", "-y",
+            "-c", "bioconda", "-c", "conda-forge",
+            "paml", "pal2nal", "gffread", "biopython", "pandas", "numpy",
+            "scipy", "matplotlib", "seaborn", "joblib", "tqdm", "ipykernel"
+        ], check=True)
+```
+
+```{python}
+# Verify PAML installation
+print("Verifying PAML installation...")
+print("-" * 60)
+
+# Check yn00
+result_yn00 = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "yn00"],
+    capture_output=True, text=True
+)
+print(f"yn00 path: {result_yn00.stdout.strip() or 'Not found'}")
+
+# Check codeml
+result_codeml = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "codeml"],
+    capture_output=True, text=True
+)
+print(f"codeml path: {result_codeml.stdout.strip() or 'Not found'}")
+
+# Check pal2nal
+result_pal2nal = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "pal2nal.pl"],
+    capture_output=True, text=True
+)
+print(f"pal2nal path: {result_pal2nal.stdout.strip() or 'Not found'}")
+
+# Check gffread
+result_gffread = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "gffread"],
+    capture_output=True, text=True
+)
+print(f"gffread path: {result_gffread.stdout.strip() or 'Not found'}")
+
+if all([result_yn00.returncode == 0, result_codeml.returncode == 0]):
+    print()
+    print("PAML tools installed successfully!")
+else:
+    print()
+    print("WARNING: Some PAML tools may not be installed correctly")
+```
+
+### 1.2 Import Python Libraries
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from Bio import SeqIO, AlignIO, Phylo
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio.Align import MultipleSeqAlignment
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+from typing import Tuple, List, Dict, Optional, Set
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import scipy.stats as stats
+
+# Load centralized path configuration
+sys.path.insert(0, './Notebooks/config')
+from load_config import (
+    load_paths, get_path, get_version, get_cds_files,
+    get_species_list, get_focal_species, ensure_output_dirs
+)
+
+# Load and display configuration
+config = load_paths(config_path="/home/jovyan/Notebooks/config/paths-set2.yaml")
+print(f"Configuration loaded: OrthoFinder Results_{get_version()}")
+print(f"OrthoFinder results: {get_path('orthofinder.results_dir')}")
+
+# Set plotting style
+plt.style.use('default')
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.size': 12,
+    'axes.linewidth': 1.2,
+    'figure.facecolor': 'white',
+    'axes.facecolor': 'white'
+})
+
+# Define PROJECT_ROOT from config
+PROJECT_ROOT = Path(get_path('base.project_root'))
+
+def resolve_project_path(relative_path: str) -> str:
+    """
+    Resolve a relative path (like ./Outputs/...) to an absolute path
+    using PROJECT_ROOT instead of os.getcwd().
+
+    This ensures paths work correctly even when Jupyter's working directory
+    differs from the project location.
+    """
+    # Remove leading ./ if present
+    if relative_path.startswith('./'):
+        relative_path = relative_path[2:]
+    return str(PROJECT_ROOT / relative_path)
+
+print(f"Project root: {PROJECT_ROOT}")
+print(f"Project exists: {PROJECT_ROOT.exists()}")
+
+# Create output directories
+os.makedirs(get_path('outputs.kaks.base_dir'), exist_ok=True)
+os.makedirs(get_path('outputs.kaks.codon_alignments'), exist_ok=True)
+os.makedirs(get_path('outputs.kaks.yn00_results'), exist_ok=True)
+os.makedirs(get_path('outputs.kaks.codeml_results'), exist_ok=True)
+os.makedirs(get_path('outputs.kaks.integration'), exist_ok=True)
+os.makedirs(get_path('outputs.kaks.figures'), exist_ok=True)
+os.makedirs(get_path('outputs.figures'), exist_ok=True)
+os.makedirs(get_path('outputs.tables'), exist_ok=True)
+
+print("Environment setup complete!")
+print(f"Output directory: ", get_path('outputs.kaks.base_dir'))
+```
+
+### 1.3 Define File Paths and Species
+
+```{python}
+# Define all file paths from centralized configuration
+PATHS = {
+    # OrthoFinder outputs (from config)
+    'orthofinder_base': get_path('orthofinder.results_dir'),
+    'orthogroups_tsv': get_path('orthofinder.orthogroups_tsv'),
+    'orthogroups_count': get_path('orthofinder.orthogroups_count'),
+    'msa_dir': get_path('orthofinder.msa_dir'),
+
+    # CAFE outputs (from config)
+    'cafe_family_results': get_path('cafe.single_lambda.family_results'),
+    'cafe_change': get_path('cafe.single_lambda.change_tab'),
+
+    # Species tree (from config)
+    'species_tree': get_path('cafe.input_tree'),
+
+    # CDS directories (from config)
+    'cds_base': get_path('database.genome_comparison'),
+
+    # Output directories (from config)
+    'output_base': get_path('outputs.kaks.base_dir'),
+        'output_figures': get_path('outputs.figures'),
+        'output_tables': get_path('outputs.tables')
+}
+
+# CDS files from centralized configuration
+# All species use consistent BRAKER3 annotation outputs (see paths.yaml for species list)
+CDS_FILES = get_cds_files()
+
+# Species requiring CDS extraction (missing from NCBI)
+# NOTE: This list is now EMPTY - all species have CDS directly from BRAKER_UNMASKED
+# (braker.codingseq files). Previously, some species needed gffread extraction, but
+# with consistent BRAKER3 annotation across all species, this is no longer necessary.
+SPECIES_NEED_CDS_EXTRACTION = []
+
+# Focal species from configuration
+FOCAL_SPECIES = get_focal_species()
+
+OUTPUT_FIGURES = get_path('outputs.figures')
+OUTPUT_TABLES = get_path('outputs.tables')
+
+print("=" * 60)
+print("FILE PATHS AND SPECIES CONFIGURATION")
+print("=" * 60)
+print(f"Focal species: {FOCAL_SPECIES}")
+print(f"Species with CDS: {len(CDS_FILES)}")
+print(f"Species needing CDS extraction: {len(SPECIES_NEED_CDS_EXTRACTION)}")
+
+# Verify file existence
+print()
+print("Verifying critical files:")
+for name, path in [
+    ('Orthogroups TSV', PATHS['orthogroups_tsv']),
+    ('CAFE results', PATHS['cafe_family_results']),
+    ('Species tree', PATHS['species_tree']),
+    ('MSA directory', PATHS['msa_dir'])
+]:
+    exists = os.path.exists(path)
+    status = "OK" if exists else "MISSING"
+    print(f"  [{status}] {name}: {path}")
+```
+
+## 2. CDS Extraction for Missing Species
+
+### 2.1 Check for Missing Species CDS
+
+```{python}
+def check_cds_availability() -> Dict[str, str]:
+    """
+    Check which species have CDS files available and which need extraction.
+
+    Returns:
+    - Dictionary of species -> CDS file path
+    """
+    available = {}
+    missing = []
+
+    for species, path in CDS_FILES.items():
+        if os.path.exists(path):
+            available[species] = path
+        else:
+            missing.append(species)
+
+    print("=" * 60)
+    print("CDS FILE AVAILABILITY CHECK")
+    print("=" * 60)
+    print(f"\nAvailable CDS files: {len(available)}")
+    for species in sorted(available.keys()):
+        print(f"  ✓ {species}")
+
+    if missing:
+        print(f"\nMissing CDS files: {len(missing)}")
+        for species in missing:
+            print(f"  ✗ {species}")
+
+    print(f"\nSpecies requiring extraction: {len(SPECIES_NEED_CDS_EXTRACTION)}")
+    for species in SPECIES_NEED_CDS_EXTRACTION:
+        print(f"  → {species}")
+
+    return available
+
+cds_available = check_cds_availability()
+```
+
+### 2.2 Extract CDS from GFF3 Annotations
+
+```{python}
+def extract_cds_from_gff3(
+    species: str,
+    genome_path: str,
+    gff3_path: str,
+    output_path: str
+) -> bool:
+    """
+    Extract CDS sequences from genome using gffread.
+
+    Parameters:
+    - species: Species name
+    - genome_path: Path to genome FASTA file
+    - gff3_path: Path to GFF3 annotation file
+    - output_path: Output CDS FASTA path
+
+    Returns:
+    - True if successful, False otherwise
+    """
+    if os.path.exists(output_path):
+        print(f"CDS file already exists: {output_path}")
+        return True
+
+    if not os.path.exists(genome_path):
+        print(f"ERROR: Genome file not found: {genome_path}")
+        return False
+
+    if not os.path.exists(gff3_path):
+        print(f"ERROR: GFF3 file not found: {gff3_path}")
+        return False
+
+    print(f"Extracting CDS for {species}...")
+    print(f"  Genome: {genome_path}")
+    print(f"  GFF3: {gff3_path}")
+    print(f"  Output: {output_path}")
+
+    # Create output directory if needed
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Run gffread
+    cmd = [
+        "conda", "run", "-n", "env_paml",
+        "gffread", "-x", output_path,
+        "-g", genome_path,
+        gff3_path
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode == 0 and os.path.exists(output_path):
+        # Count sequences
+        seq_count = sum(1 for _ in SeqIO.parse(output_path, "fasta"))
+        print(f"  Success! Extracted {seq_count:,} CDS sequences")
+        return True
+    else:
+        print(f"  ERROR: gffread failed")
+        if result.stderr:
+            print(f"  {result.stderr[:500]}")
+        return False
+
+# Define paths for species needing CDS extraction
+# DEPRECATED: This configuration is no longer used. All species now have CDS files
+# directly from BRAKER_UNMASKED (braker.codingseq). Keeping for historical reference.
+CDS_EXTRACTION_CONFIG = {
+    # Previously used for species without NCBI CDS files, but now all species
+    # are annotated consistently with BRAKER3 and use braker.codingseq directly.
+}
+
+print("=" * 60)
+print("CDS EXTRACTION CONFIGURATION")
+print("=" * 60)
+for species, config in CDS_EXTRACTION_CONFIG.items():
+    print(f"\n{species}:")
+    for key, path in config.items():
+        exists = os.path.exists(path) if key != 'output' else 'N/A'
+        print(f"  {key}: {path} [{exists}]")
+```
+
+### 2.3 Run CDS Extraction
+
+```{python}
+def run_cds_extraction():
+    """Extract CDS for all species that need it."""
+    results = {}
+
+    print("=" * 60)
+    print("RUNNING CDS EXTRACTION")
+    print("=" * 60)
+
+    for species, config in CDS_EXTRACTION_CONFIG.items():
+        print(f"\n--- {species} ---")
+        success = extract_cds_from_gff3(
+            species,
+            config['genome'],
+            config['gff3'],
+            config['output']
+        )
+        results[species] = success
+
+        if success:
+            # Add to CDS_FILES
+            CDS_FILES[species] = config['output']
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("EXTRACTION SUMMARY")
+    print("=" * 60)
+    successful = sum(results.values())
+    print(f"Successful: {successful}/{len(results)}")
+
+    for species, success in results.items():
+        status = "✓" if success else "✗"
+        print(f"  [{status}] {species}")
+
+    return results
+
+# Run extraction (uncomment to execute)
+# extraction_results = run_cds_extraction()
+
+# For now, just use available CDS files
+print("Using available CDS files only (extraction can be run manually if needed)")
+print(f"Available species for Ka/Ks analysis: {len(cds_available)}")
+```
+
+## 3. Data Preparation
+
+### 3.1 Build CDS ID Mapping
+
+```{python}
+def parse_braker_cds_header(record_id: str) -> str:
+    """
+    Extract gene ID from BRAKER3 braker.codingseq header.
+
+    BRAKER3 format: >g1.t1 or >g12345.t1
+
+    Returns gene ID (e.g., g1.t1)
+    """
+    # BRAKER3 headers are simple - just the transcript ID
+    return record_id
+
+
+def build_cds_database(cds_files: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+    """
+    Build a mapping from gene IDs to CDS sequences.
+
+    All species now use BRAKER3 braker.codingseq format with simple headers (e.g., g1.t1).
+
+    Returns:
+    - Nested dict: {species: {gene_id: sequence}}
+    """
+    cds_db = {}
+
+    print("=" * 60)
+    print("BUILDING CDS DATABASE")
+    print("=" * 60)
+    print("(All species use BRAKER3 braker.codingseq format)")
+    print()
+
+    for species, cds_path in cds_files.items():
+        if not os.path.exists(cds_path):
+            print(f"  SKIP: {species} (file not found)")
+            continue
+
+        cds_db[species] = {}
+
+        seq_count = 0
+        for record in SeqIO.parse(cds_path, "fasta"):
+            # BRAKER3 format: simple gene ID like "g1.t1"
+            gene_id = parse_braker_cds_header(record.id)
+
+            # Store sequence (uppercase for consistency)
+            cds_db[species][gene_id] = str(record.seq).upper()
+            seq_count += 1
+
+        print(f"  {species}: {seq_count:,} CDS sequences")
+
+    print()
+    print(f"Total species loaded: {len(cds_db)}")
+    total_seqs = sum(len(v) for v in cds_db.values())
+    print(f"Total CDS sequences: {total_seqs:,}")
+
+    # Show example gene IDs for verification
+    if cds_db:
+        first_species = list(cds_db.keys())[0]
+        example_ids = list(cds_db[first_species].keys())[:3]
+        print(f"Example gene IDs from {first_species}: {example_ids}")
+
+    return cds_db
+
+# Build CDS database
+cds_database = build_cds_database(cds_available)
+```
+
+### 3.2 Load CAFE-Significant Orthogroups
+
+```{python}
+def load_cafe_significant_families(
+    cafe_results_path: str,
+    pvalue_threshold: float = 0.05
+) -> pd.DataFrame:
+    """
+    Load CAFE results and filter to significant families.
+
+    Returns DataFrame with significant families.
+    """
+    # Read CAFE family results
+    df = pd.read_csv(cafe_results_path, sep='\t', comment=None)
+
+    # Fix column names (CAFE uses #FamilyID)
+    if df.columns[0].startswith('#'):
+        df.columns = ['FamilyID'] + list(df.columns[1:])
+
+    print("=" * 60)
+    print("CAFE SIGNIFICANT FAMILIES")
+    print("=" * 60)
+    print(f"Total families analyzed: {len(df):,}")
+
+    # Find p-value column
+    pvalue_cols = [c for c in df.columns if 'pvalue' in c.lower()]
+    if pvalue_cols:
+        pvalue_col = pvalue_cols[0]
+        sig_df = df[df[pvalue_col] < pvalue_threshold].copy()
+        print(f"P-value column: {pvalue_col}")
+        print(f"Significant families (p < {pvalue_threshold}): {len(sig_df):,}")
+    else:
+        print("WARNING: No p-value column found")
+        sig_df = df.copy()
+
+    print()
+    print("First 10 significant families:")
+    print(sig_df.head(10))
+
+    return sig_df
+
+cafe_significant = load_cafe_significant_families(PATHS['cafe_family_results'])
+```
+
+### 3.3 Load Orthogroup Gene Assignments
+
+```{python}
+def load_orthogroup_genes(orthogroups_path: str) -> pd.DataFrame:
+    """
+    Load orthogroup to gene assignments.
+
+    Returns DataFrame with genes per species per orthogroup.
+    """
+    df = pd.read_csv(orthogroups_path, sep='\t')
+
+    print("=" * 60)
+    print("ORTHOGROUP GENE ASSIGNMENTS")
+    print("=" * 60)
+    print(f"Total orthogroups: {len(df):,}")
+    print(f"Species columns: {[c for c in df.columns if c != 'Orthogroup']}")
+
+    return df
+
+orthogroups_df = load_orthogroup_genes(PATHS['orthogroups_tsv'])
+```
+
+### 3.4 Filter to A. laticeps-Present Families
+
+```{python}
+def filter_al_present_families(
+    orthogroups_df: pd.DataFrame,
+    cafe_significant: pd.DataFrame,
+    focal_species: str = None
+) -> List[str]:
+    """
+    Filter to orthogroups that:
+    1. Are CAFE-significant
+    2. Have genes in the focal species
+
+    Returns list of orthogroup IDs.
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    # Get significant family IDs
+    sig_families = set(cafe_significant['FamilyID'].tolist())
+
+    # Find focal species column
+    focal_col = None
+    for col in orthogroups_df.columns:
+        if focal_species.lower() in col.lower():
+            focal_col = col
+            break
+
+    if focal_col is None:
+        print(f"ERROR: Could not find column for {focal_species}")
+        return []
+
+    # Filter orthogroups
+    al_present = orthogroups_df[
+        (orthogroups_df['Orthogroup'].isin(sig_families)) &
+        (orthogroups_df[focal_col].notna()) &
+        (orthogroups_df[focal_col] != '')
+    ]
+
+    families = al_present['Orthogroup'].tolist()
+
+    print("=" * 60)
+    print("FILTERED FAMILIES FOR Ka/Ks ANALYSIS")
+    print("=" * 60)
+    print(f"CAFE-significant families: {len(sig_families):,}")
+    print(f"With {focal_species} genes: {len(families):,}")
+
+    return families
+
+families_for_analysis = filter_al_present_families(
+    orthogroups_df,
+    cafe_significant,
+    FOCAL_SPECIES
+)
+
+print(f"\nFamilies to analyze: {len(families_for_analysis)}")
+print(f"Example families: {families_for_analysis[:10]}")
+```
+
+## 4. Codon Alignment Generation
+
+### 4.1 Load Protein Alignments
+
+```{python}
+def get_protein_alignment(
+    orthogroup: str,
+    msa_dir: str
+) -> Optional[MultipleSeqAlignment]:
+    """
+    Load protein alignment for an orthogroup from OrthoFinder MSA directory.
+
+    Returns MultipleSeqAlignment or None if not found.
+
+    Note: Paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    msa_path = os.path.join(msa_dir, f"{orthogroup}.fa")
+    msa_path_abs = resolve_project_path(msa_path)
+
+    if not os.path.exists(msa_path_abs):
+        return None
+
+    try:
+        alignment = AlignIO.read(msa_path_abs, "fasta")
+        return alignment
+    except Exception as e:
+        print(f"Error reading {msa_path_abs}: {e}")
+        return None
+
+# Test loading an alignment
+test_og = families_for_analysis[0] if families_for_analysis else None
+test_aln = None  # Initialize to avoid "possibly unbound" warning
+
+if test_og:
+    test_aln = get_protein_alignment(test_og, PATHS['msa_dir'])
+    if test_aln:
+        print(f"Test alignment for {test_og}:")
+        print(f"  Sequences: {len(test_aln)}")
+        print(f"  Alignment length: {test_aln.get_alignment_length()}")
+        print(f"  Sequence IDs: {[rec.id for rec in test_aln[:5]]}")
+    else:
+        print(f"Could not load alignment for {test_og}")
+else:
+    print("No families available for testing")
+```
+
+### 4.2 Back-Translate to Codon Alignment
+
+```{python}
+def parse_orthofinder_gene_id(gene_id: str, known_species: List[str]) -> Tuple[Optional[str], str]:
+    """
+    Parse OrthoFinder gene ID to extract species and gene parts.
+
+    OrthoFinder format: {Species_name}_{gene_id}
+    Example: Anabarilius_grahami_g1086.t1 -> ('Anabarilius_grahami', 'g1086.t1')
+
+    Parameters:
+    - gene_id: Full OrthoFinder gene ID
+    - known_species: List of known species names to match against
+
+    Returns:
+    - Tuple of (species_name, gene_part) or (None, gene_id) if no match
+    """
+    # Try to match against known species (longest match first to handle species with underscores)
+    for species in sorted(known_species, key=len, reverse=True):
+        prefix = species + '_'
+        if gene_id.startswith(prefix):
+            gene_part = gene_id[len(prefix):]
+            return species, gene_part
+    return None, gene_id
+
+
+def back_translate_alignment(
+    protein_aln: MultipleSeqAlignment,
+    cds_database: Dict[str, Dict[str, str]],
+    min_species: int = 4
+) -> Optional[Dict[str, str]]:
+    """
+    Back-translate protein alignment to codon alignment.
+
+    Handles OrthoFinder's species-prefixed gene IDs (e.g., Anabarilius_grahami_g1086.t1)
+    by parsing the species prefix and looking up the gene part (g1086.t1) in the
+    corresponding species's CDS database.
+
+    Parameters:
+    - protein_aln: Protein multiple sequence alignment
+    - cds_database: Mapping of {species: {gene_id: sequence}}
+    - min_species: Minimum number of species required
+
+    Returns:
+    - Dictionary of {sequence_id: codon_aligned_sequence} or None if failed
+    """
+    codon_sequences = {}
+    species_found = set()
+    known_species = list(cds_database.keys())
+
+    for record in protein_aln:
+        full_gene_id = record.id
+
+        # Parse OrthoFinder gene ID to get species and gene part
+        species, gene_part = parse_orthofinder_gene_id(full_gene_id, known_species)
+
+        if species is None:
+            # Could not determine species from gene ID
+            continue
+
+        # Look up CDS sequence in the species database
+        sp_db = cds_database.get(species, {})
+        cds_seq = None
+
+        # Try exact match first
+        if gene_part in sp_db:
+            cds_seq = sp_db[gene_part]
+        else:
+            # Try without transcript suffix (e.g., g1.t1 -> g1)
+            gene_base = gene_part.rsplit('.', 1)[0] if '.' in gene_part else gene_part
+            if gene_base in sp_db:
+                cds_seq = sp_db[gene_base]
+
+        if cds_seq is None:
+            continue
+
+        # Back-translate
+        prot_seq = str(record.seq)
+
+        # Strip terminal stop codon '*' from protein if present
+        prot_seq_trimmed = prot_seq.rstrip('*')
+        prot_ungapped = prot_seq_trimmed.replace('-', '').replace('X', '')
+
+        # Strip terminal stop codon from CDS if present (TAA, TAG, TGA)
+        if len(cds_seq) >= 3 and cds_seq[-3:].upper() in {'TAA', 'TAG', 'TGA'}:
+            cds_seq = cds_seq[:-3]
+
+        # Check length compatibility
+        expected_cds_len = len(prot_ungapped) * 3
+
+        # Trim CDS to match expected length if it's longer
+        if len(cds_seq) >= expected_cds_len:
+            cds_seq = cds_seq[:expected_cds_len]
+        else:
+            # CDS too short, skip this sequence
+            continue
+
+        # Build codon-aligned sequence (using trimmed protein without stop)
+        codon_aln = []
+        cds_pos = 0
+
+        for aa in prot_seq_trimmed:
+            if aa == '-':
+                codon_aln.append('---')
+            elif aa == 'X':
+                codon_aln.append('NNN')
+                cds_pos += 3
+            else:
+                if cds_pos + 3 <= len(cds_seq):
+                    codon = cds_seq[cds_pos:cds_pos + 3]
+                    codon_aln.append(codon)
+                    cds_pos += 3
+                else:
+                    codon_aln.append('NNN')
+
+        codon_sequences[full_gene_id] = ''.join(codon_aln)
+        species_found.add(species)
+
+    # Check minimum species
+    if len(species_found) < min_species:
+        return None
+
+    return codon_sequences
+
+# Test back-translation
+codon_result = None  # Initialize to avoid "possibly unbound" warning
+
+if test_og and test_aln:
+    codon_result = back_translate_alignment(test_aln, cds_database, min_species=2)
+    if codon_result:
+        print(f"Back-translation test for {test_og}:")
+        print(f"  Sequences with CDS: {len(codon_result)}")
+        first_id = list(codon_result.keys())[0]
+        print(f"  First sequence: {first_id}")
+        print(f"  Codon alignment length: {len(codon_result[first_id])}")
+    else:
+        print("Back-translation test failed (not enough species with CDS)")
+else:
+    print("Skipping back-translation test (no test alignment available)")
+```
+
+### 4.3 Write PHYLIP Format for PAML
+
+```{python}
+def write_phylip_alignment(
+    codon_sequences: Dict[str, str],
+    output_path: str,
+    name_length: int = 30
+) -> bool:
+    """
+    Write codon alignment in PHYLIP format for PAML.
+
+    PAML requires sequential PHYLIP format with names up to 30 characters.
+
+    Note: Paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    if not codon_sequences:
+        return False
+
+    # Resolve output path using PROJECT_ROOT
+    output_path_abs = resolve_project_path(output_path)
+
+    # Ensure parent directory exists
+    os.makedirs(os.path.dirname(output_path_abs), exist_ok=True)
+
+    # Get alignment length
+    aln_length = len(list(codon_sequences.values())[0])
+    n_seqs = len(codon_sequences)
+
+    try:
+        with open(output_path_abs, 'w') as f:
+            # Write header
+            f.write(f" {n_seqs} {aln_length}\n")
+
+            # Write sequences
+            for name, seq in codon_sequences.items():
+                # Truncate name if needed
+                short_name = name[:name_length].ljust(name_length)
+                f.write(f"{short_name}  {seq}\n")
+
+        return True
+    except Exception as e:
+        print(f"Error writing {output_path_abs}: {e}")
+        return False
+
+# Test writing
+if codon_result:
+    test_output = f"{PATHS['output_base']}/codon_alignments/{test_og}.codon.phy"
+    success = write_phylip_alignment(codon_result, test_output)
+    print(f"Write test: {'Success' if success else 'Failed'}")
+    if success:
+        print(f"Output: {test_output}")
+```
+
+### 4.4 Generate All Codon Alignments
+
+```{python}
+def generate_all_codon_alignments(
+    families: List[str],
+    msa_dir: str,
+    cds_database: Dict[str, Dict[str, str]],
+    output_dir: str,
+    min_species: int = 4
+) -> Tuple[List[str], Dict]:
+    """
+    Generate codon alignments for all specified families.
+
+    Returns:
+    - List of successfully processed orthogroups
+    - Statistics dictionary
+
+    Note: Paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    # Resolve output directory using PROJECT_ROOT
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    successful = []
+    stats = {
+        'total': len(families),
+        'no_msa': 0,
+        'no_cds_match': 0,
+        'too_few_species': 0,
+        'success': 0
+    }
+
+    print("=" * 60)
+    print("GENERATING CODON ALIGNMENTS")
+    print("=" * 60)
+    print(f"Families to process: {len(families):,}")
+    print()
+
+    for i, og in enumerate(tqdm(families, desc="Processing")):
+        # Load protein alignment
+        prot_aln = get_protein_alignment(og, msa_dir)
+        if prot_aln is None:
+            stats['no_msa'] += 1
+            continue
+
+        # Back-translate
+        codon_seqs = back_translate_alignment(prot_aln, cds_database, min_species)
+        if codon_seqs is None:
+            stats['too_few_species'] += 1
+            continue
+
+        if len(codon_seqs) == 0:
+            stats['no_cds_match'] += 1
+            continue
+
+        # Write PHYLIP
+        output_path = os.path.join(output_dir, f"{og}.codon.phy")
+        if write_phylip_alignment(codon_seqs, output_path):
+            successful.append(og)
+            stats['success'] += 1
+
+    # Print summary
+    print()
+    print("=" * 60)
+    print("CODON ALIGNMENT SUMMARY")
+    print("=" * 60)
+    print(f"Total families: {stats['total']:,}")
+    print(f"No MSA found: {stats['no_msa']:,}")
+    print(f"No CDS match: {stats['no_cds_match']:,}")
+    print(f"Too few species: {stats['too_few_species']:,}")
+    print(f"Successfully processed: {stats['success']:,}")
+    print(f"Success rate: {100*stats['success']/stats['total']:.1f}%")
+
+    return successful, stats
+
+# Generate codon alignments
+codon_aln_dir = f"{PATHS['output_base']}/codon_alignments"
+successful_families, aln_stats = generate_all_codon_alignments(
+    families_for_analysis,
+    PATHS['msa_dir'],
+    cds_database,
+    codon_aln_dir,
+    min_species=4
+)
+
+print(f"\nCodon alignments saved to: {codon_aln_dir}")
+```
+
+`★ Insight ─────────────────────────────────────`
+**Why Back-Translation is Critical:**
+1. Ka/Ks calculation requires codon alignments (nucleotide triplets)
+2. Protein alignments ensure correct reading frame preservation
+3. Back-translation maps each amino acid position to its corresponding codon
+4. Gaps in protein alignment become '---' (three dashes) in codon alignment
+`─────────────────────────────────────────────────`
+
+## 5. Pairwise Ka/Ks Analysis (yn00)
+
+### 5.1 Create yn00 Control File
+
+```{python}
+def create_yn00_ctl(
+    seqfile: str,
+    outfile: str,
+    ctl_path: str
+) -> str:
+    """
+    Create yn00 control file.
+
+    Note: All paths are converted to absolute paths using PROJECT_ROOT
+    to handle Jupyter working directory mismatches.
+
+    Returns path to control file.
+    """
+    # Convert to absolute paths using PROJECT_ROOT (not os.getcwd())
+    seqfile_abs = resolve_project_path(seqfile)
+    outfile_abs = resolve_project_path(outfile)
+
+    ctl_content = f"""      seqfile = {seqfile_abs}
+      outfile = {outfile_abs}
+      verbose = 0
+      icode = 0
+      commonf3x4 = 0
+"""
+
+    with open(ctl_path, 'w') as f:
+        f.write(ctl_content)
+
+    return ctl_path
+```
+
+### 5.2 Parse yn00 Output
+
+```{python}
+def parse_yn00_output(output_file: str) -> List[Dict]:
+    """
+    Parse yn00 output to extract pairwise Ka/Ks values.
+
+    Returns list of dictionaries with pairwise comparisons.
+    """
+    results = []
+
+    if not os.path.exists(output_file):
+        return results
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Parse the pairwise results section
+    # yn00 output has a specific format with sequences listed
+    # and then pairwise values in a matrix
+
+    # Look for the YN00 results section
+    lines = content.split('\n')
+
+    in_results = False
+    seq_names = []
+
+    for i, line in enumerate(lines):
+        # Find sequence names
+        if line.strip().startswith('seq.'):
+            # Extract sequence name
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                seq_names.append(parts[1])
+
+        # Look for the pairwise dN/dS results
+        if 'omega (dN/dS)' in line or 'dN/dS' in line.lower():
+            in_results = True
+            continue
+
+        if in_results and line.strip():
+            # Parse pairwise values
+            # Format varies by PAML version
+            parts = line.strip().split()
+            if len(parts) >= 4:
+                try:
+                    # Try to extract values
+                    for j, val in enumerate(parts):
+                        if '(' in val and ')' in val:
+                            # This is a dN/dS value with standard error
+                            omega_match = re.search(r'([\d.]+)\s*\(([\d.]+)\)', val)
+                            if omega_match:
+                                omega = float(omega_match.group(1))
+                                se = float(omega_match.group(2))
+                                results.append({
+                                    'omega': omega,
+                                    'omega_se': se
+                                })
+                except ValueError:
+                    continue
+
+    return results
+```
+
+### 5.3 Run yn00 on All Alignments
+
+```{python}
+def run_yn00_analysis(
+    orthogroup: str,
+    codon_aln_path: str,
+    output_dir: str,
+    timeout: int = 300
+) -> Optional[Dict]:
+    """
+    Run yn00 on a single codon alignment.
+
+    Returns dictionary with results or None if failed.
+
+    Note: All paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    # Resolve all paths using PROJECT_ROOT
+    codon_aln_path_abs = resolve_project_path(codon_aln_path)
+
+    # Create working directory
+    work_dir = os.path.join(output_dir, orthogroup)
+    work_dir_abs = resolve_project_path(work_dir)
+    os.makedirs(work_dir_abs, exist_ok=True)
+
+    # Create control file with absolute paths
+    outfile = os.path.join(work_dir, "yn00_results.txt")
+    outfile_abs = resolve_project_path(outfile)
+    ctl_path = os.path.join(work_dir, "yn00.ctl")
+    ctl_path_abs = resolve_project_path(ctl_path)
+
+    # create_yn00_ctl already uses resolve_project_path internally
+    create_yn00_ctl(codon_aln_path, outfile, ctl_path_abs)
+
+    # Run yn00 with absolute paths
+    try:
+        result = subprocess.run(
+            ["conda", "run", "-n", "env_paml", "yn00", ctl_path_abs],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        if result.returncode == 0 and os.path.exists(outfile_abs):
+            # Parse results
+            pairwise = parse_yn00_output(outfile_abs)
+            return {
+                'orthogroup': orthogroup,
+                'pairwise_results': pairwise,
+                'status': 'success'
+            }
+        else:
+            return {
+                'orthogroup': orthogroup,
+                'status': 'failed',
+                'error': result.stderr[:500] if result.stderr else 'Unknown error'
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'orthogroup': orthogroup,
+            'status': 'timeout'
+        }
+    except Exception as e:
+        return {
+            'orthogroup': orthogroup,
+            'status': 'error',
+            'error': str(e)
+        }
+
+def run_yn00_batch(
+    orthogroups: List[str],
+    codon_aln_dir: str,
+    output_dir: str,
+    n_workers: int = 8
+) -> pd.DataFrame:
+    """
+    Run yn00 on multiple alignments in parallel.
+
+    Returns DataFrame with all results.
+
+    Note: All paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    # Resolve output directory using PROJECT_ROOT
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    print("=" * 60)
+    print("RUNNING yn00 PAIRWISE Ka/Ks ANALYSIS")
+    print("=" * 60)
+    print(f"Orthogroups to analyze: {len(orthogroups):,}")
+    print(f"Parallel workers: {n_workers}")
+    print()
+
+    results = []
+    success = 0
+    failed = 0
+    skipped = 0
+
+    for og in tqdm(orthogroups, desc="yn00 analysis"):
+        codon_path = os.path.join(codon_aln_dir, f"{og}.codon.phy")
+        # Use resolved path for existence check
+        codon_path_abs = resolve_project_path(codon_path)
+
+        if not os.path.exists(codon_path_abs):
+            skipped += 1
+            continue
+
+        result = run_yn00_analysis(og, codon_path, output_dir)
+        results.append(result)
+
+        if result and result.get('status') == 'success':
+            success += 1
+        else:
+            failed += 1
+
+    print()
+    print(f"Successful: {success:,}")
+    print(f"Failed: {failed:,}")
+    print(f"Skipped (no codon alignment): {skipped:,}")
+
+    return results
+
+# Run yn00 analysis (on a subset for testing)
+yn00_output_dir = f"{PATHS['output_base']}/yn00_results"
+
+# For testing, use first 50 families; in production, use all
+test_families = successful_families[:50] if len(successful_families) > 50 else successful_families
+
+print(f"Running yn00 on {len(test_families)} families for testing...")
+yn00_results = run_yn00_batch(test_families, codon_aln_dir, yn00_output_dir, n_workers=4)
+```
+
+### 5.3.1 Debug yn00 Failures (Run if yn00 fails)
+
+```{python}
+# DEBUG: Investigate why yn00 is failing
+# Run this cell if you see "Successful: 0" in the yn00 batch output
+
+def debug_yn00_single(orthogroup: str, codon_aln_dir: str, output_dir: str):
+    """
+    Debug a single yn00 run with detailed output.
+    """
+    print("=" * 70)
+    print(f"DEBUGGING yn00 FOR {orthogroup}")
+    print("=" * 70)
+
+    # 1. Check codon alignment file
+    codon_path = os.path.join(codon_aln_dir, f"{orthogroup}.codon.phy")
+    codon_path_resolved = resolve_project_path(codon_path)
+
+    print(f"\n[1] CODON ALIGNMENT FILE:")
+    print(f"    Relative path: {codon_path}")
+    print(f"    Resolved path: {codon_path_resolved}")
+    print(f"    File exists: {os.path.exists(codon_path_resolved)}")
+
+    if os.path.exists(codon_path_resolved):
+        with open(codon_path_resolved, 'r') as f:
+            lines = f.readlines()[:5]
+        print(f"    First 5 lines:")
+        for line in lines:
+            print(f"      {line.rstrip()}")
+    else:
+        print("    ERROR: Codon alignment file not found!")
+        return
+
+    # 2. Check/create work directory
+    work_dir = os.path.join(output_dir, orthogroup)
+    work_dir_resolved = resolve_project_path(work_dir)
+    os.makedirs(work_dir_resolved, exist_ok=True)
+
+    print(f"\n[2] WORK DIRECTORY:")
+    print(f"    Relative path: {work_dir}")
+    print(f"    Resolved path: {work_dir_resolved}")
+    print(f"    Directory exists: {os.path.exists(work_dir_resolved)}")
+
+    # 3. Create control file
+    outfile = os.path.join(work_dir, "yn00_results.txt")
+    ctl_path = os.path.join(work_dir, "yn00.ctl")
+    ctl_path_resolved = resolve_project_path(ctl_path)
+
+    create_yn00_ctl(codon_path, outfile, ctl_path_resolved)
+
+    print(f"\n[3] CONTROL FILE:")
+    print(f"    Path: {ctl_path_resolved}")
+    print(f"    Contents:")
+    with open(ctl_path_resolved, 'r') as f:
+        for line in f:
+            print(f"      {line.rstrip()}")
+
+    # 4. Run yn00 with full output capture
+    print(f"\n[4] RUNNING yn00:")
+    print(f"    Command: conda run -n env_paml yn00 {ctl_path_resolved}")
+    print(f"    Working directory: {work_dir_resolved}")
+
+    result = subprocess.run(
+        ["conda", "run", "-n", "env_paml", "yn00", ctl_path_resolved],
+        cwd=work_dir_resolved,
+        capture_output=True,
+        text=True,
+        timeout=60
+    )
+
+    print(f"\n    Return code: {result.returncode}")
+    print(f"\n    STDOUT ({len(result.stdout)} chars):")
+    if result.stdout:
+        print(result.stdout[:2000])
+    else:
+        print("      (empty)")
+
+    print(f"\n    STDERR ({len(result.stderr)} chars):")
+    if result.stderr:
+        print(result.stderr[:2000])
+    else:
+        print("      (empty)")
+
+    # 5. Check output file
+    outfile_resolved = resolve_project_path(outfile)
+    print(f"\n[5] OUTPUT FILE:")
+    print(f"    Expected path: {outfile_resolved}")
+    print(f"    File exists: {os.path.exists(outfile_resolved)}")
+
+    # Also check for yn00 output in work directory
+    print(f"\n    Files in work directory:")
+    for f in os.listdir(work_dir_resolved):
+        fpath = os.path.join(work_dir_resolved, f)
+        size = os.path.getsize(fpath) if os.path.isfile(fpath) else "dir"
+        print(f"      {f}: {size} bytes")
+
+    # Check if 2YN.t or 2YN.dS files exist (yn00 creates these)
+    for yn_file in ['2YN.t', '2YN.dS', '2YN.dN', 'rst', 'rub']:
+        yn_path = os.path.join(work_dir_resolved, yn_file)
+        if os.path.exists(yn_path):
+            print(f"\n    {yn_file} contents (first 500 chars):")
+            with open(yn_path, 'r') as f:
+                print(f.read()[:500])
+
+# Run debug on first failed family
+if yn00_results:
+    failed_results = [r for r in yn00_results if r.get('status') != 'success']
+    if failed_results:
+        first_failed = failed_results[0]
+        print(f"Debugging first failed family: {first_failed['orthogroup']}")
+        print(f"Failure status: {first_failed.get('status')}")
+        print(f"Error message: {first_failed.get('error', 'N/A')}")
+        print()
+        debug_yn00_single(first_failed['orthogroup'], codon_aln_dir, yn00_output_dir)
+    else:
+        print("All yn00 runs succeeded!")
+else:
+    print("No yn00 results to debug")
+```
+
+### 5.4 Summarize yn00 Results
+
+```{python}
+def summarize_yn00_results(
+    results: List[Dict],
+    output_path: str
+) -> pd.DataFrame:
+    """
+    Summarize yn00 results into a DataFrame.
+    """
+    rows = []
+
+    for r in results:
+        if r.get('status') != 'success':
+            continue
+
+        og = r['orthogroup']
+        pairwise = r.get('pairwise_results', [])
+
+        for pw in pairwise:
+            rows.append({
+                'Orthogroup': og,
+                'omega': pw.get('omega'),
+                'omega_SE': pw.get('omega_se'),
+                'dN': pw.get('dN'),
+                'dS': pw.get('dS')
+            })
+
+    df = pd.DataFrame(rows)
+
+    if len(df) > 0:
+        # Save results
+        df.to_csv(output_path, sep='\t', index=False)
+
+        print("=" * 60)
+        print("yn00 RESULTS SUMMARY")
+        print("=" * 60)
+        print(f"Total pairwise comparisons: {len(df):,}")
+        print()
+        print("Ka/Ks (omega) statistics:")
+        print(df['omega'].describe())
+
+        # Categorize
+        if 'omega' in df.columns:
+            positive = (df['omega'] > 1).sum()
+            neutral = ((df['omega'] >= 0.9) & (df['omega'] <= 1.1)).sum()
+            purifying = (df['omega'] < 0.5).sum()
+
+            print()
+            print("Selection categories:")
+            print(f"  Positive selection (ω > 1): {positive:,}")
+            print(f"  Near neutral (0.9 ≤ ω ≤ 1.1): {neutral:,}")
+            print(f"  Purifying selection (ω < 0.5): {purifying:,}")
+
+    return df
+
+# Summarize results
+yn00_summary_path = f"{PATHS['output_base']}/yn00_results/all_pairwise_kaks.tsv"
+yn00_df = summarize_yn00_results(yn00_results, yn00_summary_path)
+```
+
+## 6. Branch Model Analysis (codeml)
+
+### 6.1 Prepare Species Tree with Foreground Branch
+
+```{python}
+def mark_foreground_branch(
+    tree_path: str,
+    foreground_species: str,
+    output_path: str
+) -> str:
+    """
+    Create a tree file with the foreground branch marked for codeml.
+
+    In PAML, foreground branches are marked with '#1' after the species name.
+    """
+    # Read tree
+    tree = Phylo.read(tree_path, "newick")
+
+    # Find and mark the foreground species
+    for terminal in tree.get_terminals():
+        if terminal.name == foreground_species:
+            terminal.name = f"{foreground_species}#1"
+
+    # Write marked tree
+    Phylo.write(tree, output_path, "newick")
+
+    # Read and clean up the tree string (remove branch lengths for compatibility)
+    with open(output_path, 'r') as f:
+        tree_str = f.read().strip()
+
+    print(f"Marked tree created: {output_path}")
+    print(f"Foreground species: {foreground_species}")
+
+    return output_path
+
+# Create marked tree
+marked_tree_path = f"{PATHS['output_base']}/codeml_results/species_tree_marked.tre"
+os.makedirs(os.path.dirname(marked_tree_path), exist_ok=True)
+
+if os.path.exists(PATHS['species_tree']):
+    marked_tree = mark_foreground_branch(
+        PATHS['species_tree'],
+        FOCAL_SPECIES,
+        marked_tree_path
+    )
+else:
+    print(f"WARNING: Species tree not found at {PATHS['species_tree']}")
+```
+
+### 6.1.5 Load Single-Copy Orthologs for Branch Model Analysis
+
+Single-copy orthologs (one gene per species) are ideal for branch model analysis because:
+- No ambiguity about gene-species relationships
+- Better alignment quality (no paralog divergence)
+- Cleaner interpretation of selection on the focal lineage
+
+```{python}
+def identify_true_single_copy_orthologs(
+    msa_dir: str,
+    candidate_orthogroups: List[str],
+    num_species: int = 12
+) -> List[str]:
+    """
+    Identify TRUE single-copy orthologs where each orthogroup has:
+    - Exactly num_species sequences
+    - Each sequence from a different species (no paralogs)
+
+    OrthoFinder's Single_Copy_Orthologue_Sequences may include orthogroups
+    where some species have multiple genes, so we verify by checking the MSA files.
+
+    Note: num_species should match len(CDS_FILES) from config. Default is 12 for
+    the current Jan09 OrthoFinder run. Override with len(CDS_FILES) when calling.
+    """
+    msa_dir_abs = resolve_project_path(msa_dir)
+    true_single_copy = []
+
+    for og in candidate_orthogroups:
+        msa_file = os.path.join(msa_dir_abs, f"{og}.fa")
+        if not os.path.exists(msa_file):
+            continue
+
+        # Read gene IDs from MSA
+        gene_ids = []
+        with open(msa_file, 'r') as f:
+            for line in f:
+                if line.startswith('>'):
+                    gene_ids.append(line[1:].strip())
+
+        # Check gene count
+        if len(gene_ids) != num_species:
+            continue
+
+        # Extract species from gene IDs (format: Species_name_geneID)
+        # Use CDS_FILES.keys() as the list of known species
+        species_set = set()
+        for gid in gene_ids:
+            # Try to match known species patterns
+            for sp in CDS_FILES.keys():
+                if gid.startswith(sp + '_'):
+                    species_set.add(sp)
+                    break
+
+        # True single-copy if each gene is from a different species
+        if len(species_set) == num_species:
+            true_single_copy.append(og)
+
+    return true_single_copy
+
+
+# Load candidate single-copy orthogroup IDs from OrthoFinder
+single_copy_dir = f"{PATHS['orthofinder_base']}/Single_Copy_Orthologue_Sequences"
+single_copy_dir_abs = resolve_project_path(single_copy_dir)
+
+if os.path.exists(single_copy_dir_abs):
+    candidate_orthogroups = [
+        f.replace('.fa', '')
+        for f in os.listdir(single_copy_dir_abs)
+        if f.endswith('.fa')
+    ]
+    print(f"Candidate single-copy orthologs from OrthoFinder: {len(candidate_orthogroups)}")
+else:
+    candidate_orthogroups = []
+    print(f"WARNING: Single-copy directory not found at {single_copy_dir}")
+
+# Identify TRUE single-copy orthologs (one gene per species)
+print(f"Verifying orthogroups have exactly one gene per species...")
+true_single_copy_orthogroups = identify_true_single_copy_orthologs(
+    PATHS['msa_dir'],
+    candidate_orthogroups,
+    num_species=len(CDS_FILES)  # Number of species from config
+)
+print(f"TRUE single-copy orthologs ({len(CDS_FILES)} genes, {len(CDS_FILES)} species): {len(true_single_copy_orthogroups)}")
+
+# Fallback: MSA files contain all orthogroup members (including paralogs/isoforms),
+# so the species-count check above always fails. Trust OrthoFinder's designation directly.
+if len(true_single_copy_orthogroups) == 0 and len(candidate_orthogroups) > 0:
+    print("WARNING: MSA-based verification returned 0 (MSA files include paralogs/isoforms).")
+    print("Falling back to OrthoFinder's Single_Copy_Orthologue_Sequences list directly.")
+    true_single_copy_orthogroups = candidate_orthogroups
+
+print(f"Orthogroup IDs: {true_single_copy_orthogroups}")
+
+# Check how many already have codon alignments
+codon_aln_dir_abs = resolve_project_path(codon_aln_dir)
+single_copy_with_codon = [
+    og for og in true_single_copy_orthogroups
+    if os.path.exists(os.path.join(codon_aln_dir_abs, f"{og}.codon.phy"))
+]
+print(f"\nSingle-copy with existing codon alignments: {len(single_copy_with_codon)}")
+
+# Generate codon alignments for single-copy orthologs that don't have them yet
+single_copy_need_codon = [
+    og for og in true_single_copy_orthogroups
+    if og not in single_copy_with_codon
+]
+
+if single_copy_need_codon:
+    print(f"\nGenerating codon alignments for {len(single_copy_need_codon)} single-copy orthologs...")
+
+    sc_successful, sc_stats = generate_all_codon_alignments(
+        single_copy_need_codon,
+        PATHS['msa_dir'],
+        cds_database,
+        codon_aln_dir,
+        min_species=4  # OrthoFinder guarantees single-copy; tree will be pruned to match
+    )
+
+    print(f"\nSingle-copy codon alignments generated: {len(sc_successful)}")
+
+    # Update list of single-copy families with codon alignments
+    single_copy_with_codon = [
+        og for og in true_single_copy_orthogroups
+        if os.path.exists(os.path.join(codon_aln_dir_abs, f"{og}.codon.phy"))
+    ]
+    print(f"Total single-copy with codon alignments: {len(single_copy_with_codon)}")
+else:
+    print("All single-copy orthologs already have codon alignments.")
+
+
+def rename_alignment_to_species(codon_file: str) -> List[str]:
+    """
+    Rename sequences from gene IDs to species names for codeml compatibility.
+
+    codeml requires sequence names in the alignment to match taxa names in the tree.
+    For single-copy orthologs (one gene per species), we rename:
+      "Anabarilius_grahami_g20855.t1" → "Anabarilius_grahami"
+
+    Deduplicates: if multiple isoforms (e.g. t1/t2) map to the same species,
+    only the first is kept. Updates the PHYLIP sequence count in the header.
+
+    Returns the list of species present in the renamed alignment.
+    """
+    with open(codon_file, 'r') as f:
+        content = f.read()
+
+    lines = content.strip().split('\n')
+    header = lines[0]  # e.g. " 12 3681"
+
+    seen_species = set()
+    new_seq_lines = []
+
+    for line in lines[1:]:
+        if line.strip():
+            parts = line.split(None, 1)  # Split on first whitespace
+            if len(parts) >= 2:
+                gene_id = parts[0]
+                sequence = parts[1]
+                # Idempotent: if gene_id is already a species name (file was
+                # previously renamed), use it directly — avoids destroying the
+                # file when this function is called a second time.
+                if gene_id in CDS_FILES:
+                    species_name = gene_id
+                else:
+                    species_name = None
+                    for sp in CDS_FILES.keys():
+                        if gene_id.startswith(sp + '_'):
+                            species_name = sp
+                            break
+                if species_name and species_name not in seen_species:
+                    seen_species.add(species_name)
+                    new_seq_lines.append(f"{species_name}  {sequence}")
+                # Skip unrecognised or duplicate-species lines
+
+    # Update sequence count in header to match deduplicated count
+    header_parts = header.split()
+    if len(header_parts) >= 2:
+        header = f" {len(new_seq_lines)} {header_parts[1]}"
+
+    with open(codon_file, 'w') as f:
+        f.write('\n'.join([header] + new_seq_lines) + '\n')
+
+    return list(seen_species)
+
+
+# Rename sequences to species names for codeml compatibility
+print("\nRenaming alignment sequences to species names for codeml...")
+for og in single_copy_with_codon:
+    codon_file = resolve_project_path(f"{codon_aln_dir}/{og}.codon.phy")
+    rename_alignment_to_species(codon_file)
+print(f"Renamed {len(single_copy_with_codon)} alignments")
+```
+
+### 6.2 Create codeml Control Files
+
+```{python}
+def create_codeml_ctl(
+    seqfile: str,
+    treefile: str,
+    outfile: str,
+    ctl_path: str,
+    model: int = 0,
+    NSsites: int = 0
+) -> str:
+    """
+    Create codeml control file.
+
+    Parameters:
+    - model: 0 = one-ratio (null), 2 = branch model
+    - NSsites: 0 = one omega for all sites
+
+    Note: All paths are converted to absolute paths using PROJECT_ROOT
+    to handle Jupyter working directory mismatches.
+    """
+    # Convert all paths to absolute using PROJECT_ROOT (not os.getcwd())
+    seqfile_abs = resolve_project_path(seqfile)
+    treefile_abs = resolve_project_path(treefile)
+    outfile_abs = resolve_project_path(outfile)
+
+    ctl_content = f"""      seqfile = {seqfile_abs}
+      treefile = {treefile_abs}
+      outfile = {outfile_abs}
+
+      noisy = 0
+      verbose = 1
+      runmode = 0
+
+      seqtype = 1
+      CodonFreq = 2
+      clock = 0
+      aaDist = 0
+      model = {model}
+      NSsites = {NSsites}
+
+      icode = 0
+      fix_kappa = 0
+      kappa = 2
+      fix_omega = 0
+      omega = 0.5
+
+      fix_alpha = 1
+      alpha = 0
+      Malpha = 0
+      ncatG = 4
+
+      getSE = 0
+      RateAncestor = 0
+
+      Small_Diff = 5e-7
+      cleandata = 1
+      fix_blength = 0
+      method = 0
+"""
+
+    with open(ctl_path, 'w') as f:
+        f.write(ctl_content)
+
+    return ctl_path
+```
+
+### 6.3 Run codeml Branch Model
+
+```{python}
+def run_codeml_branch_analysis(
+    orthogroup: str,
+    codon_aln_path: str,
+    tree_path: str,
+    output_dir: str,
+    timeout: int = 600
+) -> Optional[Dict]:
+    """
+    Run codeml branch model analysis.
+
+    Runs both null model (M0) and branch model to test for
+    significant difference in omega on the foreground branch.
+
+    Note: All paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    # Resolve all paths using PROJECT_ROOT
+    work_dir = os.path.join(output_dir, orthogroup)
+    work_dir_abs = resolve_project_path(work_dir)
+    os.makedirs(work_dir_abs, exist_ok=True)
+
+    results = {'orthogroup': orthogroup}
+
+    # Run null model (model=0, one ratio)
+    m0_out = os.path.join(work_dir, "m0_results.txt")
+    m0_out_abs = resolve_project_path(m0_out)
+    m0_ctl = os.path.join(work_dir, "m0.ctl")
+    m0_ctl_abs = resolve_project_path(m0_ctl)
+
+    create_codeml_ctl(
+        codon_aln_path, tree_path, m0_out, m0_ctl_abs,
+        model=0, NSsites=0
+    )
+
+    try:
+        result_m0 = subprocess.run(
+            ["conda", "run", "-n", "env_paml", "codeml", m0_ctl_abs],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        # Check for valid output (codeml may return non-zero even on success)
+        lnL_m0 = None
+        omega_m0 = None
+        if os.path.exists(m0_out_abs):
+            lnL_m0 = parse_codeml_likelihood(m0_out_abs)
+            omega_m0 = parse_codeml_omega(m0_out_abs)
+
+        if lnL_m0 is not None:
+            results['lnL_null'] = lnL_m0
+            results['omega_null'] = omega_m0
+        else:
+            results['status'] = 'null_model_failed'
+            return results
+
+    except subprocess.TimeoutExpired:
+        results['status'] = 'timeout_null'
+        return results
+
+    # Run branch model (model=2)
+    branch_out = os.path.join(work_dir, "branch_results.txt")
+    branch_out_abs = resolve_project_path(branch_out)
+    branch_ctl = os.path.join(work_dir, "branch.ctl")
+    branch_ctl_abs = resolve_project_path(branch_ctl)
+
+    create_codeml_ctl(
+        codon_aln_path, tree_path, branch_out, branch_ctl_abs,
+        model=2, NSsites=0
+    )
+
+    try:
+        result_branch = subprocess.run(
+            ["conda", "run", "-n", "env_paml", "codeml", branch_ctl_abs],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        # Check for valid output (codeml may return non-zero even on success)
+        lnL_branch = None
+        if os.path.exists(branch_out_abs):
+            lnL_branch = parse_codeml_likelihood(branch_out_abs)
+            omega_fg = parse_codeml_foreground_omega(branch_out_abs)
+            omega_bg = parse_codeml_background_omega(branch_out_abs)
+
+        if lnL_branch is not None:
+            results['lnL_branch'] = lnL_branch
+            results['omega_foreground'] = omega_fg
+            results['omega_background'] = omega_bg
+
+            # Calculate LRT
+            if lnL_m0 is not None and lnL_branch is not None:
+                lrt_stat = 2 * (lnL_branch - lnL_m0)
+                pvalue = 1 - stats.chi2.cdf(lrt_stat, df=1)
+                results['LRT_stat'] = lrt_stat
+                results['pvalue'] = pvalue
+
+            results['status'] = 'success'
+        else:
+            results['status'] = 'branch_model_failed'
+
+    except subprocess.TimeoutExpired:
+        results['status'] = 'timeout_branch'
+
+    return results
+
+def parse_codeml_likelihood(output_file: str) -> Optional[float]:
+    """Parse log-likelihood from codeml output."""
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Look for lnL line
+    match = re.search(r'lnL.*?(-\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1))
+
+    return None
+
+def parse_codeml_omega(output_file: str) -> Optional[float]:
+    """Parse omega from codeml output."""
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Look for omega
+    match = re.search(r'omega\s*=\s*(\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1))
+
+    return None
+
+def parse_codeml_foreground_omega(output_file: str) -> Optional[float]:
+    """Parse foreground omega from branch model output.
+
+    codeml model=2 outputs: "w (dN/dS) for branches:  0.29434 0.25038"
+    where first value is background, second is foreground (marked with #1).
+    """
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Look for "w (dN/dS) for branches:" followed by two values
+    # Format: "w (dN/dS) for branches:  0.29434 0.25038"
+    match = re.search(r'w \(dN/dS\) for branches:\s+(\d+\.?\d*)\s+(\d+\.?\d*)', content)
+    if match:
+        return float(match.group(2))  # Second value is foreground
+
+    return None
+
+def parse_codeml_background_omega(output_file: str) -> Optional[float]:
+    """Parse background omega from branch model output.
+
+    codeml model=2 outputs: "w (dN/dS) for branches:  0.29434 0.25038"
+    where first value is background, second is foreground.
+    """
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    # Look for "w (dN/dS) for branches:" followed by two values
+    match = re.search(r'w \(dN/dS\) for branches:\s+(\d+\.?\d*)\s+(\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1))  # First value is background
+
+    return None
+```
+
+### 6.4 Run Branch Model Batch
+
+```{python}
+def run_codeml_batch(
+    orthogroups: List[str],
+    codon_aln_dir: str,
+    tree_path: str,
+    output_dir: str
+) -> List[Dict]:
+    """
+    Run codeml branch model on multiple alignments.
+
+    Note: All paths are resolved using PROJECT_ROOT to handle Jupyter
+    working directory mismatches.
+    """
+    # Resolve output directory using PROJECT_ROOT
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    print("=" * 60)
+    print("RUNNING codeml BRANCH MODEL ANALYSIS")
+    print("=" * 60)
+    print(f"Orthogroups to analyze: {len(orthogroups):,}")
+    print(f"Foreground species: {FOCAL_SPECIES}")
+    print()
+
+    results = []
+    skipped = 0
+
+    for og in tqdm(orthogroups, desc="codeml analysis"):
+        codon_path = os.path.join(codon_aln_dir, f"{og}.codon.phy")
+        # Use resolved path for existence check
+        codon_path_abs = resolve_project_path(codon_path)
+
+        if not os.path.exists(codon_path_abs):
+            skipped += 1
+            continue
+
+        # Rename to species names; deduplicate isoforms.
+        # Returns the list of species actually present in the alignment.
+        species_in_aln = rename_alignment_to_species(codon_path_abs)
+
+        # Prune the marked tree to only species present in this alignment.
+        # codeml requires the tree taxa to exactly match the alignment taxa.
+        og_work_dir = resolve_project_path(os.path.join(output_dir, og))
+        os.makedirs(og_work_dir, exist_ok=True)
+        pruned_tree_path = os.path.join(og_work_dir, "pruned_tree.tre")
+
+        base_tree = Phylo.read(tree_path, "newick")
+        aln_species_plain = {s.replace('#1', '') for s in species_in_aln}
+        # Snapshot names to remove BEFORE modifying the tree — pruning while
+        # iterating get_terminals() shifts the tree structure mid-loop and
+        # raises "can't find a matching target below this root".
+        terminals_to_remove = [
+            t.name for t in base_tree.get_terminals()
+            if (t.name or '').replace('#1', '') not in aln_species_plain
+        ]
+        for name in terminals_to_remove:
+            try:
+                base_tree.prune(name)
+            except ValueError:
+                pass  # Already removed as a side-effect of an earlier prune
+        Phylo.write(base_tree, pruned_tree_path, "newick")
+
+        result = run_codeml_branch_analysis(
+            og, codon_path, pruned_tree_path, output_dir
+        )
+        results.append(result)
+
+    # Summary
+    success = sum(1 for r in results if r.get('status') == 'success')
+    print()
+    print(f"Successful: {success:,}")
+    print(f"Failed: {len(results) - success:,}")
+    print(f"Skipped (no codon alignment): {skipped:,}")
+
+    return results
+
+# Run codeml analysis (on test subset)
+codeml_output_dir = f"{PATHS['output_base']}/codeml_results"
+
+def get_alignment_seq_count(codon_file: str) -> int:
+    """Get number of sequences from PHYLIP format codon alignment."""
+    codon_file_abs = resolve_project_path(codon_file)
+    if not os.path.exists(codon_file_abs):
+        return 0
+    with open(codon_file_abs, 'r') as f:
+        first_line = f.readline().strip()
+    # PHYLIP format: "num_seqs  num_positions"
+    parts = first_line.split()
+    if len(parts) >= 1:
+        try:
+            return int(parts[0])
+        except ValueError:
+            return 0
+    return 0
+
+def filter_single_copy_orthogroups(
+    orthogroups: List[str],
+    codon_dir: str,
+    num_species: int = 12,
+    tolerance: int = 0
+) -> List[str]:
+    """
+    Filter orthogroups to only include single-copy (or near single-copy) families.
+
+    For branch model analysis, we need orthogroups where each species has
+    exactly one gene (single-copy orthologs). Multi-copy families with
+    many paralogs cause issues because:
+    1. Too many gaps when aligning diverse paralogs
+    2. cleandata=1 removes all gappy columns, leaving no data
+    3. Paralogs confound selection analysis
+
+    Parameters:
+    - num_species: Expected number of species (default 12 for Jan09 run)
+    - tolerance: Allow orthogroups with num_species ± tolerance sequences
+    """
+    min_seqs = num_species - tolerance
+    max_seqs = num_species + tolerance
+
+    filtered = []
+    for og in orthogroups:
+        codon_path = f"{codon_dir}/{og}.codon.phy"
+        seq_count = get_alignment_seq_count(codon_path)
+        if min_seqs <= seq_count <= max_seqs:
+            filtered.append(og)
+
+    return filtered
+
+# Use single-copy orthologs from section 6.1.5 for branch model analysis
+print("=" * 60)
+print("SELECTING ORTHOGROUPS FOR BRANCH MODEL ANALYSIS")
+print("=" * 60)
+print(f"Single-copy orthologs with codon alignments: {len(single_copy_with_codon):,}")
+
+# Use resolved path for tree existence check
+if os.path.exists(resolve_project_path(marked_tree_path)):
+    # Use first 20 single-copy families for testing
+    codeml_test_families = single_copy_with_codon[:20] if len(single_copy_with_codon) > 20 else single_copy_with_codon
+    print(f"Running codeml on {len(codeml_test_families)} single-copy families for testing...")
+
+    codeml_results = run_codeml_batch(
+        codeml_test_families,
+        codon_aln_dir,
+        marked_tree_path,
+        codeml_output_dir
+    )
+else:
+    print("Skipping codeml analysis (marked tree not available)")
+    codeml_results = []
+```
+
+### 6.4.1 Debug codeml (run if needed)
+
+```{python}
+#| eval: false
+
+# Debug the first failed codeml run
+failed_codeml = [r for r in codeml_results if r.get('status') != 'success']
+
+if failed_codeml:
+    first_fail = failed_codeml[0]
+    og = first_fail['orthogroup']
+    print(f"Debugging first failed family: {og}")
+    print(f"Failure status: {first_fail.get('status', 'unknown')}")
+    print()
+
+    print("=" * 70)
+    print(f"DEBUGGING codeml FOR {og}")
+    print("=" * 70)
+
+    # 1. Check marked tree file
+    print("\n[1] MARKED TREE FILE:")
+    print(f"    Relative path: {marked_tree_path}")
+    marked_tree_abs = resolve_project_path(marked_tree_path)
+    print(f"    Resolved path: {marked_tree_abs}")
+    print(f"    File exists: {os.path.exists(marked_tree_abs)}")
+
+    if os.path.exists(marked_tree_abs):
+        with open(marked_tree_abs, 'r') as f:
+            tree_content = f.read()
+        print(f"    Tree content: {tree_content[:500]}...")
+        # Check if foreground species is marked
+        if '#1' in tree_content:
+            print(f"    Foreground marking: Found '#1' marker ✓")
+        else:
+            print(f"    Foreground marking: NO '#1' marker found ✗")
+
+    # 2. Check codon alignment
+    print("\n[2] CODON ALIGNMENT FILE:")
+    codon_path = f"{codon_aln_dir}/{og}.codon.phy"
+    codon_path_abs = resolve_project_path(codon_path)
+    print(f"    Relative path: {codon_path}")
+    print(f"    Resolved path: {codon_path_abs}")
+    print(f"    File exists: {os.path.exists(codon_path_abs)}")
+
+    # 3. Check work directory and control files
+    print("\n[3] WORK DIRECTORY:")
+    work_dir = f"{codeml_output_dir}/{og}"
+    work_dir_abs = resolve_project_path(work_dir)
+    print(f"    Relative path: {work_dir}")
+    print(f"    Resolved path: {work_dir_abs}")
+    print(f"    Directory exists: {os.path.exists(work_dir_abs)}")
+
+    # 4. Check M0 control file
+    print("\n[4] M0 CONTROL FILE:")
+    m0_ctl_path = os.path.join(work_dir_abs, "m0.ctl")
+    print(f"    Path: {m0_ctl_path}")
+    print(f"    File exists: {os.path.exists(m0_ctl_path)}")
+
+    if os.path.exists(m0_ctl_path):
+        with open(m0_ctl_path, 'r') as f:
+            ctl_content = f.read()
+        print(f"    Contents:\n{ctl_content}")
+
+        # Check if paths in control file exist
+        print("\n[5] PATHS IN CONTROL FILE:")
+        for line in ctl_content.strip().split('\n'):
+            if '=' in line and ('seqfile' in line or 'treefile' in line or 'outfile' in line):
+                key, value = line.split('=', 1)
+                path = value.strip()
+                exists = os.path.exists(path)
+                print(f"    {key.strip()}: {path}")
+                print(f"        Exists: {exists}")
+
+    # 5. Try running codeml manually
+    print("\n[6] RUNNING codeml:")
+    print(f"    Command: conda run -n env_paml codeml {m0_ctl_path}")
+    print(f"    Working directory: {work_dir_abs}")
+
+    result = subprocess.run(
+        ["conda", "run", "-n", "env_paml", "codeml", m0_ctl_path],
+        cwd=work_dir_abs,
+        capture_output=True,
+        text=True,
+        timeout=60
+    )
+
+    print(f"\n    Return code: {result.returncode}")
+    print(f"\n    STDOUT ({len(result.stdout)} chars):")
+    print(result.stdout[:2000] if len(result.stdout) > 2000 else result.stdout)
+    print(f"\n    STDERR ({len(result.stderr)} chars):")
+    print(result.stderr[:500] if len(result.stderr) > 500 else result.stderr)
+
+    # 6. Check output file
+    print("\n[7] OUTPUT FILE:")
+    m0_out = os.path.join(work_dir_abs, "m0_results.txt")
+    print(f"    Expected path: {m0_out}")
+    print(f"    File exists: {os.path.exists(m0_out)}")
+
+    if os.path.exists(m0_out):
+        with open(m0_out, 'r') as f:
+            content = f.read()
+        print(f"    File size: {len(content)} chars")
+        print(f"    First 500 chars:\n{content[:500]}")
+
+    # 7. List files in work directory
+    print("\n[8] Files in work directory:")
+    if os.path.exists(work_dir_abs):
+        for fname in os.listdir(work_dir_abs):
+            fpath = os.path.join(work_dir_abs, fname)
+            size = os.path.getsize(fpath) if os.path.isfile(fpath) else "dir"
+            print(f"      {fname}: {size} bytes" if isinstance(size, int) else f"      {fname}: {size}")
+else:
+    print("No failed codeml runs to debug!")
+```
+
+### 6.5 Summarize Branch Model Results
+
+```{python}
+def summarize_codeml_results(
+    results: List[Dict],
+    output_path: str,
+    pvalue_threshold: float = 0.05
+) -> pd.DataFrame:
+    """
+    Summarize codeml branch model results.
+    """
+    rows = []
+
+    for r in results:
+        if r.get('status') != 'success':
+            continue
+
+        rows.append({
+            'Orthogroup': r['orthogroup'],
+            'lnL_null': r.get('lnL_null'),
+            'lnL_branch': r.get('lnL_branch'),
+            'omega_null': r.get('omega_null'),
+            'omega_foreground': r.get('omega_foreground'),
+            'omega_background': r.get('omega_background'),
+            'LRT_stat': r.get('LRT_stat'),
+            'pvalue': r.get('pvalue')
+        })
+
+    df = pd.DataFrame(rows)
+
+    if len(df) > 0:
+        df.to_csv(output_path, sep='\t', index=False)
+
+        print("=" * 60)
+        print("codeml BRANCH MODEL RESULTS")
+        print("=" * 60)
+        print(f"Orthogroups analyzed: {len(df):,}")
+
+        if 'pvalue' in df.columns:
+            sig = df[df['pvalue'] < pvalue_threshold]
+            print(f"Significant (p < {pvalue_threshold}): {len(sig):,}")
+
+            if 'omega_foreground' in df.columns:
+                positive = sig[sig['omega_foreground'] > 1]
+                print(f"  With positive selection (ω > 1): {len(positive):,}")
+
+        if len(df) > 0:
+            print()
+            print("Top significant results:")
+            print(df.nsmallest(10, 'pvalue')[['Orthogroup', 'omega_foreground', 'pvalue']])
+
+    return df
+
+# Summarize codeml results
+codeml_summary_path = f"{PATHS['output_base']}/codeml_results/branch_model_summary.tsv"
+codeml_df = summarize_codeml_results(codeml_results, codeml_summary_path)
+```
+
+`★ Insight ─────────────────────────────────────`
+**Branch Model vs. Site Model:**
+1. **Branch model** tests if the foreground lineage (A. laticeps) has different ω
+2. Uses likelihood ratio test (LRT) comparing null (single ω) vs branch model
+3. Significant LRT (p < 0.05) + ω > 1 indicates positive selection on that branch
+4. **Site models** (not implemented here) can identify specific codons under selection
+`─────────────────────────────────────────────────`
+
+## 7. Integration with CAFE Results
+
+### 7.1 Load CAFE Change Data
+
+```{python}
+def load_cafe_changes(cafe_change_path: str) -> pd.DataFrame:
+    """
+    Load CAFE gene family size changes per species.
+    """
+    df = pd.read_csv(cafe_change_path, sep='\t', comment=None)
+
+    # Fix column names
+    if df.columns[0].startswith('#'):
+        df.columns = ['FamilyID'] + list(df.columns[1:])
+
+    print("CAFE change data loaded")
+    print(f"Families: {len(df):,}")
+    print(f"Columns: {df.columns.tolist()[:5]}...")
+
+    return df
+
+if os.path.exists(PATHS['cafe_change']):
+    cafe_changes = load_cafe_changes(PATHS['cafe_change'])
+else:
+    print("CAFE change file not found")
+    cafe_changes = None
+```
+
+### 7.2 Merge Ka/Ks with CAFE
+
+```{python}
+def integrate_kaks_cafe(
+    kaks_df: pd.DataFrame,
+    cafe_significant: pd.DataFrame,
+    cafe_changes: pd.DataFrame,
+    focal_species: str = None,
+    output_path: str = None
+) -> pd.DataFrame:
+    """
+    Integrate Ka/Ks results with CAFE gene family evolution data.
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    if kaks_df is None or len(kaks_df) == 0:
+        print("No Ka/Ks data available for integration")
+        return pd.DataFrame()
+
+    # Find focal species change column
+    focal_col = None
+    if cafe_changes is not None:
+        for col in cafe_changes.columns:
+            if focal_species in col:
+                focal_col = col
+                break
+
+    print("=" * 60)
+    print("INTEGRATING Ka/Ks WITH CAFE RESULTS")
+    print("=" * 60)
+
+    # Merge with CAFE significant
+    merged = kaks_df.merge(
+        cafe_significant[['FamilyID', 'pvalue']].rename(columns={'pvalue': 'cafe_pvalue', 'FamilyID': 'Orthogroup'}),
+        on='Orthogroup',
+        how='left'
+    )
+
+    # Add CAFE changes for focal species
+    if cafe_changes is not None and focal_col is not None:
+        change_data = cafe_changes[['FamilyID', focal_col]].copy()
+        change_data.columns = ['Orthogroup', 'cafe_change']
+        merged = merged.merge(change_data, on='Orthogroup', how='left')
+
+        # Categorize CAFE changes
+        merged['cafe_category'] = merged['cafe_change'].apply(
+            lambda x: 'Expanded' if pd.notna(x) and x > 0 else (
+                'Contracted' if pd.notna(x) and x < 0 else 'Stable'
+            )
+        )
+
+    # Categorize selection
+    if 'omega_foreground' in merged.columns:
+        omega_col = 'omega_foreground'
+    elif 'omega' in merged.columns:
+        omega_col = 'omega'
+    else:
+        omega_col = None
+
+    if omega_col:
+        merged['selection_category'] = pd.cut(
+            merged[omega_col],
+            bins=[0, 0.1, 0.5, 1.0, float('inf')],
+            labels=['Strong_purifying', 'Moderate_purifying', 'Relaxed', 'Positive'],
+            include_lowest=True  # Include ω=0 in first bin [0, 0.1]
+        )
+
+    # Summary
+    print(f"Merged dataset: {len(merged):,} orthogroups")
+
+    if 'cafe_category' in merged.columns:
+        print()
+        print("CAFE categories:")
+        print(merged['cafe_category'].value_counts())
+
+    if 'selection_category' in merged.columns:
+        print()
+        print("Selection categories:")
+        print(merged['selection_category'].value_counts())
+
+    # Save
+    if output_path:
+        merged.to_csv(output_path, sep='\t', index=False)
+        print(f"\nSaved to: {output_path}")
+
+    return merged
+
+# Integrate results
+integration_output = f"{PATHS['output_base']}/integration/kaks_cafe_merged.tsv"
+
+if codeml_df is not None and len(codeml_df) > 0:
+    integrated_df = integrate_kaks_cafe(
+        codeml_df,
+        cafe_significant,
+        cafe_changes,
+        FOCAL_SPECIES,
+        integration_output
+    )
+elif yn00_df is not None and len(yn00_df) > 0:
+    integrated_df = integrate_kaks_cafe(
+        yn00_df,
+        cafe_significant,
+        cafe_changes,
+        FOCAL_SPECIES,
+        integration_output
+    )
+else:
+    print("No Ka/Ks results available for integration")
+    integrated_df = pd.DataFrame()
+```
+
+### 7.3 Cross-Tabulation Analysis
+
+```{python}
+def analyze_selection_cafe_crosstab(
+    integrated_df: pd.DataFrame,
+    output_path: str = None
+) -> pd.DataFrame:
+    """
+    Create cross-tabulation of selection categories vs CAFE categories.
+    """
+    if 'selection_category' not in integrated_df.columns or 'cafe_category' not in integrated_df.columns:
+        print("Required columns not found for cross-tabulation")
+        return pd.DataFrame()
+
+    # Create crosstab
+    ct = pd.crosstab(
+        integrated_df['selection_category'],
+        integrated_df['cafe_category'],
+        margins=True
+    )
+
+    print("=" * 60)
+    print("SELECTION × CAFE CROSS-TABULATION")
+    print("=" * 60)
+    print(ct)
+
+    if output_path:
+        ct.to_csv(output_path, sep='\t')
+        print(f"\nSaved to: {output_path}")
+
+    return ct
+
+if len(integrated_df) > 0:
+    crosstab = analyze_selection_cafe_crosstab(
+        integrated_df,
+        f"{PATHS['output_base']}/integration/selection_cafe_crosstab.tsv"
+    )
+```
+
+## 8. Functional Annotation
+
+### 8.1 Identify Genes Under Positive Selection
+
+```{python}
+def identify_selected_genes(
+    integrated_df: pd.DataFrame,
+    orthogroups_df: pd.DataFrame,
+    focal_species: str,
+    pvalue_threshold: float = 0.05,
+    omega_threshold: float = 1.0
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Identify genes under positive and strong purifying selection.
+
+    Returns:
+    - DataFrame of positively selected genes
+    - DataFrame of strongly purifying selected genes
+    """
+    if len(integrated_df) == 0:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Find omega column
+    omega_col = 'omega_foreground' if 'omega_foreground' in integrated_df.columns else 'omega'
+    pvalue_col = 'pvalue' if 'pvalue' in integrated_df.columns else None
+
+    # Filter for positive selection
+    if pvalue_col:
+        positive_mask = (integrated_df[omega_col] > omega_threshold) & \
+                       (integrated_df[pvalue_col] < pvalue_threshold)
+    else:
+        positive_mask = integrated_df[omega_col] > omega_threshold
+
+    positive_ogs = integrated_df[positive_mask]
+
+    # Filter for strong purifying selection
+    purifying_mask = integrated_df[omega_col] < 0.1
+    purifying_ogs = integrated_df[purifying_mask]
+
+    print("=" * 60)
+    print("GENES UNDER SELECTION")
+    print("=" * 60)
+    print(f"Positive selection (ω > {omega_threshold}, p < {pvalue_threshold}): {len(positive_ogs):,}")
+    print(f"Strong purifying selection (ω < 0.1): {len(purifying_ogs):,}")
+
+    # Get gene IDs from orthogroups
+    focal_col = None
+    for col in orthogroups_df.columns:
+        if focal_species.lower() in col.lower():
+            focal_col = col
+            break
+
+    if focal_col and len(positive_ogs) > 0:
+        print()
+        print("Top positively selected orthogroups:")
+        for _, row in positive_ogs.head(10).iterrows():
+            og = row['Orthogroup']
+            og_row = orthogroups_df[orthogroups_df['Orthogroup'] == og]
+            if len(og_row) > 0 and pd.notna(og_row[focal_col].values[0]):
+                genes = og_row[focal_col].values[0]
+                print(f"  {og}: {genes[:50]}...")
+
+    return positive_ogs, purifying_ogs
+
+if len(integrated_df) > 0:
+    positive_selection, purifying_selection = identify_selected_genes(
+        integrated_df,
+        orthogroups_df,
+        FOCAL_SPECIES
+    )
+
+    # Save
+    if len(positive_selection) > 0:
+        positive_selection.to_csv(
+            f"{PATHS['output_base']}/codeml_results/positive_selection_genes.tsv",
+            sep='\t', index=False
+        )
+    if len(purifying_selection) > 0:
+        purifying_selection.to_csv(
+            f"{PATHS['output_base']}/codeml_results/purifying_selection_genes.tsv",
+            sep='\t', index=False
+        )
+```
+
+## 9. Visualization
+
+### 9.1 Ka/Ks Distribution
+
+```{python}
+def plot_kaks_distribution(
+    df: pd.DataFrame,
+    output_path: str,
+    omega_col: str = 'omega'
+):
+    """
+    Plot Ka/Ks distribution histogram.
+    """
+    if omega_col not in df.columns:
+        omega_col = 'omega_foreground' if 'omega_foreground' in df.columns else None
+
+    if omega_col is None:
+        print("No omega column found for plotting")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Filter out extreme values for visualization
+    omega_values = df[omega_col].dropna()
+    omega_values = omega_values[omega_values < 5]  # Cap at 5 for visualization
+
+    ax.hist(omega_values, bins=50, color='steelblue', edgecolor='white', alpha=0.7)
+
+    # Add threshold lines
+    ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='ω = 1 (Neutral)')
+    ax.axvline(x=0.5, color='orange', linestyle='--', linewidth=1.5, label='ω = 0.5')
+    ax.axvline(x=0.1, color='green', linestyle='--', linewidth=1.5, label='ω = 0.1 (Strong purifying)')
+
+    ax.set_xlabel('Ka/Ks (ω)', fontsize=12)
+    ax.set_ylabel('Number of orthogroups', fontsize=12)
+    ax.set_title('Distribution of Ka/Ks Ratios in CAFE-Significant Families',
+                fontsize=14, fontweight='bold')
+    ax.legend(fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+if len(integrated_df) > 0:
+    plot_kaks_distribution(
+        integrated_df,
+        f"{OUTPUT_FIGURES}/kaks_distribution"
+    )
+```
+
+### 9.2 Selection-CAFE Heatmap
+
+```{python}
+def plot_selection_cafe_heatmap(
+    crosstab: pd.DataFrame,
+    output_path: str
+):
+    """
+    Create heatmap of selection type vs CAFE category.
+    """
+    if crosstab.empty:
+        print("No data for heatmap")
+        return
+
+    # Remove margins for heatmap
+    ct = crosstab.iloc[:-1, :-1]  # Remove 'All' row and column
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    sns.heatmap(ct, annot=True, fmt='d', cmap='YlOrRd',
+                ax=ax, cbar_kws={'label': 'Count'})
+
+    ax.set_xlabel('CAFE Category', fontsize=12)
+    ax.set_ylabel('Selection Type', fontsize=12)
+    ax.set_title('Selection Pressure vs Gene Family Evolution\n(Aspiorhynchus laticeps)',
+                fontsize=14, fontweight='bold')
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+if 'crosstab' in dir() and not crosstab.empty:
+    plot_selection_cafe_heatmap(
+        crosstab,
+        f"{OUTPUT_FIGURES}/selection_cafe_heatmap"
+    )
+```
+
+### 9.3 Volcano Plot (Branch Model)
+
+```{python}
+def plot_volcano(
+    df: pd.DataFrame,
+    output_path: str,
+    pvalue_threshold: float = 0.05,
+    omega_threshold: float = 1.0
+):
+    """
+    Create volcano plot of branch model results.
+    """
+    omega_col = 'omega_foreground' if 'omega_foreground' in df.columns else 'omega'
+
+    if 'pvalue' not in df.columns or omega_col not in df.columns:
+        print("Required columns not found for volcano plot")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Calculate -log10(pvalue) and log2(omega)
+    df_plot = df.dropna(subset=[omega_col, 'pvalue']).copy()
+    df_plot['neg_log_p'] = -np.log10(df_plot['pvalue'] + 1e-300)
+    df_plot['log_omega'] = np.log2(df_plot[omega_col] + 0.01)
+
+    # Assign colors
+    colors = []
+    for _, row in df_plot.iterrows():
+        if row['pvalue'] < pvalue_threshold and row[omega_col] > omega_threshold:
+            colors.append('red')  # Positive selection
+        elif row['pvalue'] < pvalue_threshold and row[omega_col] < 0.5:
+            colors.append('blue')  # Strong purifying
+        else:
+            colors.append('gray')  # Not significant
+
+    ax.scatter(df_plot['log_omega'], df_plot['neg_log_p'],
+               c=colors, alpha=0.6, s=30)
+
+    # Add threshold lines
+    ax.axhline(y=-np.log10(pvalue_threshold), color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(x=0, color='gray', linestyle='--', alpha=0.5)
+
+    ax.set_xlabel('log2(ω)', fontsize=12)
+    ax.set_ylabel('-log10(p-value)', fontsize=12)
+    ax.set_title('Branch Model Results: A. laticeps Selection Analysis\n(Volcano Plot)',
+                fontsize=14, fontweight='bold')
+
+    # Legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='red', label='Positive selection'),
+        Patch(facecolor='blue', label='Strong purifying'),
+        Patch(facecolor='gray', label='Not significant')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+if len(codeml_df) > 0:
+    plot_volcano(codeml_df, f"{OUTPUT_FIGURES}/kaks_volcano_plot")
+```
+
+### 9.4 Publication Summary Figure
+
+```{python}
+def create_publication_figure(
+    integrated_df: pd.DataFrame,
+    crosstab: pd.DataFrame,
+    output_path: str
+):
+    """
+    Create multi-panel publication figure.
+    """
+    if len(integrated_df) == 0:
+        print("No data for publication figure")
+        return
+
+    fig = plt.figure(figsize=(16, 12))
+
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.3)
+
+    omega_col = 'omega_foreground' if 'omega_foreground' in integrated_df.columns else 'omega'
+
+    # Panel A: Ka/Ks distribution
+    ax1 = fig.add_subplot(gs[0, 0])
+    omega_values = integrated_df[omega_col].dropna()
+    omega_values = omega_values[omega_values < 5]
+    ax1.hist(omega_values, bins=30, color='steelblue', edgecolor='white', alpha=0.7)
+    ax1.axvline(x=1.0, color='red', linestyle='--', linewidth=2)
+    ax1.set_xlabel('Ka/Ks (ω)', fontsize=11)
+    ax1.set_ylabel('Count', fontsize=11)
+    ax1.set_title('A. Ka/Ks Distribution', fontsize=13, fontweight='bold')
+
+    # Panel B: Selection categories
+    ax2 = fig.add_subplot(gs[0, 1])
+    if 'selection_category' in integrated_df.columns:
+        cats = integrated_df['selection_category'].value_counts()
+        colors = {'Strong_purifying': '#27AE60', 'Moderate_purifying': '#3498DB',
+                 'Relaxed': '#F39C12', 'Positive': '#E74C3C'}
+        ax2.bar(range(len(cats)), cats.values,
+                color=[colors.get(c, 'gray') for c in cats.index])
+        ax2.set_xticks(range(len(cats)))
+        ax2.set_xticklabels(cats.index, rotation=45, ha='right', fontsize=9)
+        ax2.set_ylabel('Number of orthogroups', fontsize=11)
+        ax2.set_title('B. Selection Categories', fontsize=13, fontweight='bold')
+
+    # Panel C: Heatmap
+    ax3 = fig.add_subplot(gs[1, 0])
+    if not crosstab.empty:
+        ct = crosstab.iloc[:-1, :-1]
+        sns.heatmap(ct, annot=True, fmt='d', cmap='YlOrRd', ax=ax3)
+        ax3.set_title('C. Selection × CAFE', fontsize=13, fontweight='bold')
+
+    # Panel D: CAFE categories
+    ax4 = fig.add_subplot(gs[1, 1])
+    if 'cafe_category' in integrated_df.columns:
+        cafe_cats = integrated_df['cafe_category'].value_counts()
+        colors = {'Expanded': '#27AE60', 'Contracted': '#E74C3C', 'Stable': '#95A5A6'}
+        ax4.bar(range(len(cafe_cats)), cafe_cats.values,
+                color=[colors.get(c, 'gray') for c in cafe_cats.index])
+        ax4.set_xticks(range(len(cafe_cats)))
+        ax4.set_xticklabels(cafe_cats.index, fontsize=10)
+        ax4.set_ylabel('Number of orthogroups', fontsize=11)
+        ax4.set_title('D. CAFE Categories', fontsize=13, fontweight='bold')
+
+    fig.suptitle('Ka/Ks Selection Analysis of Aspiorhynchus laticeps\nIntegrated with CAFE Gene Family Evolution',
+                fontsize=15, fontweight='bold', y=0.98)
+
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Publication figure saved to: {output_path}.png/pdf")
+
+if len(integrated_df) > 0:
+    ct = crosstab if 'crosstab' in dir() else pd.DataFrame()
+    create_publication_figure(
+        integrated_df,
+        ct,
+        f"{OUTPUT_FIGURES}/kaks_publication_figure"
+    )
+```
+
+## 10. Summary and Export
+
+```{python}
+def create_analysis_summary(
+    aln_stats: Dict,
+    yn00_results: List,
+    codeml_results: List,
+    integrated_df: pd.DataFrame
+) -> Dict:
+    """
+    Create comprehensive analysis summary.
+    """
+    summary = {
+        'analysis_info': {
+            'tool': 'PAML (yn00, codeml)',
+            'focal_species': FOCAL_SPECIES,
+            'analysis_date': pd.Timestamp.now().isoformat()
+        },
+        'codon_alignment': {
+            'families_attempted': aln_stats.get('total', 0),
+            'families_successful': aln_stats.get('success', 0),
+            'success_rate': f"{100*aln_stats.get('success', 0)/max(aln_stats.get('total', 1), 1):.1f}%"
+        },
+        'yn00_pairwise': {
+            'families_analyzed': sum(1 for r in yn00_results if r.get('status') == 'success'),
+            'total_pairwise_comparisons': len(yn00_df) if 'yn00_df' in dir() and yn00_df is not None else 0
+        },
+        'codeml_branch': {
+            'families_analyzed': sum(1 for r in codeml_results if r.get('status') == 'success'),
+        },
+        'selection_results': {},
+        'integration': {}
+    }
+
+    # Add selection statistics
+    if len(integrated_df) > 0:
+        omega_col = 'omega_foreground' if 'omega_foreground' in integrated_df.columns else 'omega'
+
+        if omega_col in integrated_df.columns:
+            summary['selection_results'] = {
+                'positive_selection': int((integrated_df[omega_col] > 1).sum()),
+                'relaxed_constraint': int(((integrated_df[omega_col] >= 0.5) &
+                                          (integrated_df[omega_col] <= 1)).sum()),
+                'moderate_purifying': int(((integrated_df[omega_col] >= 0.1) &
+                                          (integrated_df[omega_col] < 0.5)).sum()),
+                'strong_purifying': int((integrated_df[omega_col] < 0.1).sum())
+            }
+
+        if 'cafe_category' in integrated_df.columns:
+            summary['integration']['cafe_expanded'] = int((integrated_df['cafe_category'] == 'Expanded').sum())
+            summary['integration']['cafe_contracted'] = int((integrated_df['cafe_category'] == 'Contracted').sum())
+            summary['integration']['cafe_stable'] = int((integrated_df['cafe_category'] == 'Stable').sum())
+
+    return summary
+
+# Create and save summary
+analysis_summary = create_analysis_summary(
+    aln_stats,
+    yn00_results if 'yn00_results' in dir() else [],
+    codeml_results if 'codeml_results' in dir() else [],
+    integrated_df if 'integrated_df' in dir() else pd.DataFrame()
+)
+
+# Save as JSON
+summary_path = f"{PATHS['output_base']}/analysis_summary.json"
+with open(summary_path, 'w') as f:
+    json.dump(analysis_summary, f, indent=2)
+
+print("=" * 60)
+print("Ka/Ks ANALYSIS SUMMARY")
+print("=" * 60)
+print(json.dumps(analysis_summary, indent=2))
+print()
+print(f"Summary saved to: {summary_path}")
+```
+
+```{python}
+print("=" * 60)
+print("Ka/Ks ANALYSIS - COMPLETION SUMMARY")
+print("=" * 60)
+print()
+print("Analysis completed!")
+print()
+print("Output Directories:")
+print(f"  - Codon alignments: {PATHS['output_base']}/codon_alignments/")
+print(f"  - yn00 results: {PATHS['output_base']}/yn00_results/")
+print(f"  - codeml results: {PATHS['output_base']}/codeml_results/")
+print(f"  - Integration: {PATHS['output_base']}/integration/")
+print()
+print("Key Results Files:")
+print(f"  - Pairwise Ka/Ks: {PATHS['output_base']}/yn00_results/all_pairwise_kaks.tsv")
+print(f"  - Branch model: {PATHS['output_base']}/codeml_results/branch_model_summary.tsv")
+print(f"  - Positive selection: {PATHS['output_base']}/codeml_results/positive_selection_genes.tsv")
+print(f"  - Integrated results: {PATHS['output_base']}/integration/kaks_cafe_merged.tsv")
+print()
+print("Figures Generated:")
+print("  - kaks_distribution.png/pdf")
+print("  - selection_cafe_heatmap.png/pdf")
+print("  - kaks_volcano_plot.png/pdf")
+print("  - kaks_publication_figure.png/pdf")
+print()
+print("Next Steps:")
+print("  1. Run GO/KEGG enrichment on positively selected genes")
+print("  2. Cross-reference with CAFE-expanded families")
+print("  3. Detailed analysis of top candidates")
+print("  4. Run full analysis on all CAFE-significant families (not just test subset)")
+```
+
+### Out[45]: ✓ Done 0.0s
+```
+============================================================
+Ka/Ks ANALYSIS - COMPLETION SUMMARY
+============================================================
+
+Analysis completed!
+
+Output Directories:
+  - Codon alignments: ./Outputs/KaKs/codon_alignments/
+  - yn00 results: ./Outputs/KaKs/yn00_results/
+  - codeml results: ./Outputs/KaKs/codeml_results/
+  - Integration: ./Outputs/KaKs/integration/
+
+Key Results Files:
+  - Pairwise Ka/Ks: ./Outputs/KaKs/yn00_results/all_pairwise_kaks.tsv
+  - Branch model: ./Outputs/KaKs/codeml_results/branch_model_summary.tsv
+  - Positive selection: ./Outputs/KaKs/codeml_results/positive_selection_genes.tsv
+  - Integrated results: ./Outputs/KaKs/integration/kaks_cafe_merged.tsv
+
+Figures Generated:
+  - kaks_distribution.png/pdf
+  - selection_cafe_heatmap.png/pdf
+  - kaks_volcano_plot.png/pdf
+  - kaks_publication_figure.png/pdf
+
+Next Steps:
+  1. Run GO/KEGG enrichment on positively selected genes
+  2. Cross-reference with CAFE-expanded families
+  3. Detailed analysis of top candidates
+  4. Run full analysis on all CAFE-significant families (not just test subset)
+
+```
+
+`★ Insight ─────────────────────────────────────`
+**Interpreting Ka/Ks Results:**
+1. **ω > 1 with significant LRT**: Strong evidence for positive selection on the A. laticeps branch
+2. **ω < 0.1**: Essential genes under strong purifying selection
+3. **Combined with CAFE**: Expanded families under positive selection may drive adaptive traits
+4. **Biological context**: A. laticeps is endemic to Xinjiang - selected genes may relate to cold adaptation, altitude, or unique ecological niche
+`─────────────────────────────────────────────────`
+
+## References
+
+1. **PAML**: Yang Z. (2007). PAML 4: Phylogenetic Analysis by Maximum Likelihood. Molecular Biology and Evolution 24(8):1586-1591
+
+2. **yn00 method**: Yang Z, Nielsen R. (2000). Estimating synonymous and nonsynonymous substitution rates under realistic evolutionary models. Molecular Biology and Evolution 17(1):32-43
+
+3. **Branch models**: Yang Z. (1998). Likelihood ratio tests for detecting positive selection and application to primate lysozyme evolution. Molecular Biology and Evolution 15(5):568-573
+
+4. **CAFE5**: Mendes FK, Vanderpool D, Fulton B, Hahn MW. (2020). CAFE 5 models variation in evolutionary rates among gene families. Bioinformatics 36(22-23):5516-5518
+
+5. **PAL2NAL**: Suyama M, Torrents D, Bork P. (2006). PAL2NAL: robust conversion of protein sequence alignments into the corresponding codon alignments. Nucleic Acids Research 34:W609-W612

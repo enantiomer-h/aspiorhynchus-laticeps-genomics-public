@@ -13,7 +13,7 @@ jupyter:
 This notebook provides a comprehensive visualization suite for OrthoFinder comparative genomics results, including phylogenetic trees, orthogroup analysis, heatmaps, statistical plots, and advanced set visualizations. The analysis integrates multiple visualization approaches developed across different analysis phases.
 
 ### Data Sources
-- **OrthoFinder Results**: `./Outputs/OrthoFinder/Results_Apr25/`
+- **OrthoFinder Results**: Configured in `config/paths.yaml`
 - **Processed Tables**: `./Notebooks/Tables/`
 - **Output Figures**: `./Notebooks/Figures/`
 
@@ -24,6 +24,32 @@ This notebook provides a comprehensive visualization suite for OrthoFinder compa
 !mamba env list
 !jupyter kernelspec list
 from IPython.display import Image, display
+```
+
+### Load Configuration
+
+```{python}
+import sys
+sys.path.insert(0, './Notebooks/config')
+from load_config import load_paths, get_path, get_version, get_focal_species, get_focal_abbreviation
+
+# Load and display configuration
+config = load_paths(config_path="/home/jovyan/Notebooks/config/paths-set2.yaml")
+print(f"Configuration loaded: OrthoFinder Results_{get_version()}")
+
+# Define commonly used paths for this notebook
+ORTHOFINDER_RESULTS = get_path('orthofinder.results_dir')
+SPECIES_TREE = get_path('orthofinder.species_tree')
+SPECIES_TREE_NODE_LABELS = get_path('orthofinder.species_tree_node_labels')
+GENE_DUPLICATIONS = get_path('orthofinder.duplications_file')
+ORTHOGROUPS_COUNT = get_path('orthofinder.orthogroups_count')
+GENE_TREES_DIR = get_path('orthofinder.gene_trees')
+OUTPUT_FIGURES = get_path('outputs.figures')
+OUTPUT_TABLES = get_path('outputs.tables')
+FOCAL_SPECIES = get_focal_species()
+
+print(f"OrthoFinder results: {ORTHOFINDER_RESULTS}")
+print(f"Species tree: {SPECIES_TREE}")
 ```
 
 ### Available Kernels
@@ -236,12 +262,12 @@ def plot_phylogenetic_tree_with_lengths(
 ### 1.2 Species Tree Visualizations
 
 #### Rooted Species Tree
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt)
+- [Tree File](.SPECIES_TREE)
 
 ```{python}
 # Publication-ready rooted species tree with enhanced styling
 plot_phylogenetic_tree_with_lengths(
-    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    newick_file_path=SPECIES_TREE,
     figsize=(16, 12),
     branch_label_precision=4,
     title="Species Phylogenetic Tree (Rooted)",
@@ -251,19 +277,19 @@ plot_phylogenetic_tree_with_lengths(
     branch_color='#2E4057',
     label_color='#1A1A1A',
     show_scale_bar=True,
-    save_path="./Notebooks/Figures/SpeciesTree_rooted",
+    save_path=f"{OUTPUT_FIGURES}/SpeciesTree_rooted",
     dpi=300,
     publication_ready=True
 )
 ```
 
 #### Species Tree with Node Labels
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt)
+- [Tree File](.SPECIES_TREE_NODE_LABELS)
 
 ```{python}
 # Publication-ready species tree with node labels
 plot_phylogenetic_tree_with_lengths(
-    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt",
+    newick_file_path=SPECIES_TREE_NODE_LABELS,
     figsize=(16, 12),
     branch_label_precision=3,
     title="Species Phylogenetic Tree with Node Labels",
@@ -273,19 +299,19 @@ plot_phylogenetic_tree_with_lengths(
     branch_color='#2E4057',
     label_color='#1A1A1A',
     show_scale_bar=True,
-    save_path="./Notebooks/Figures/SpeciesTree_rooted_node_labels",
+    save_path=f"{OUTPUT_FIGURES}/SpeciesTree_rooted_node_labels",
     dpi=300,
     publication_ready=True
 )
 ```
 
 #### Gene Duplications Tree
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt)
+- [Tree File](.GENE_DUPLICATIONS)
 
 ```{python}
 # Publication-ready gene duplication tree with enhanced visualization
 plot_phylogenetic_tree_with_lengths(
-    newick_file_path="./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt",
+    newick_file_path=GENE_DUPLICATIONS,
     figsize=(16, 12),
     branch_label_precision=3,
     title="Species Tree with Gene Duplication Events (≥50% Support)",
@@ -295,7 +321,7 @@ plot_phylogenetic_tree_with_lengths(
     branch_color='#8B4513',  # Brown color to distinguish duplication events
     label_color='#1A1A1A',
     show_scale_bar=True,
-    save_path="./Notebooks/Figures/SpeciesTree_Gene_Duplications_0.5_Support",
+    save_path=f"{OUTPUT_FIGURES}/SpeciesTree_Gene_Duplications_0.5_Support",
     dpi=300,
     publication_ready=True
 )
@@ -721,12 +747,12 @@ create_tree_comparison_plots <- function(newick_file_path, save_base_path = NULL
 ### 1.5.2 Advanced Species Tree Visualizations with R ggtree
 
 #### Publication-Quality Rooted Species Tree with Clade Coloring
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt)
+- [Tree File](.SPECIES_TREE)
 
 ```{r}
 # Publication-quality rooted species tree with automatic clade coloring
 p_rooted_colorful <- plot_phylogenetic_tree_ggtree(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    newick_file_path = SPECIES_TREE,
     layout = "rectangular",
     color_scheme = "clade_auto",
     color_palette = "Set1",
@@ -743,7 +769,7 @@ p_rooted_colorful <- plot_phylogenetic_tree_ggtree(
     plot_width = 16,
     plot_height = 12,
     theme_style = "publication",
-    save_path = "./Notebooks/Figures/SpeciesTree_rooted_ggtree_colorful",
+    save_path = f"{OUTPUT_FIGURES}/SpeciesTree_rooted_ggtree_colorful",
     # output_formats = c("png", "pdf", "svg")
     output_formats = c("png", "pdf")
 )
@@ -755,7 +781,7 @@ print(p_rooted_colorful)
 ```{r}
 # Beautiful circular tree with plasma color scheme
 p_circular <- plot_circular_tree_ggtree(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    newick_file_path = SPECIES_TREE,
     color_scheme = "clade_auto",
     color_palette = "plasma",
     n_clusters = 5,
@@ -767,7 +793,7 @@ p_circular <- plot_circular_tree_ggtree(
     title_size = 22,
     plot_width = 14,
     plot_height = 14,
-    save_path = "./Notebooks/Figures/SpeciesTree_circular_plasma",
+    save_path = f"{OUTPUT_FIGURES}/SpeciesTree_circular_plasma",
     output_formats = c("png", "pdf")
 )
 
@@ -778,7 +804,7 @@ print(p_circular)
 ```{r}
 # Fan-shaped tree with gradient coloring based on branch lengths
 p_fan_gradient <- plot_fan_tree_ggtree(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
+    newick_file_path = SPECIES_TREE,
     color_scheme = "gradient",
     color_palette = "viridis",
     branch_size = 1.0,
@@ -792,7 +818,7 @@ p_fan_gradient <- plot_fan_tree_ggtree(
     title_size = 22,
     plot_width = 14,
     plot_height = 14,
-    save_path = "./Notebooks/Figures/SpeciesTree_fan_gradient",
+    save_path = f"{OUTPUT_FIGURES}/SpeciesTree_fan_gradient",
     output_formats = c("png", "pdf")
 )
 
@@ -800,12 +826,12 @@ print(p_fan_gradient)
 ```
 
 #### Gene Duplications Tree with Enhanced Styling
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt)
+- [Tree File](.GENE_DUPLICATIONS)
 
 ```{r}
 # Gene duplication tree with special highlighting and node support
 p_gene_dup <- plot_phylogenetic_tree_ggtree(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Gene_Duplication_Events/SpeciesTree_Gene_Duplications_0.5_Support.txt",
+    newick_file_path = GENE_DUPLICATIONS,
     layout = "rectangular",
     color_scheme = "clade_auto",
     color_palette = "Dark2",
@@ -824,7 +850,7 @@ p_gene_dup <- plot_phylogenetic_tree_ggtree(
     plot_width = 18,
     plot_height = 12,
     theme_style = "publication",
-    save_path = "./Notebooks/Figures/SpeciesTree_GeneDup_ggtree_enhanced",
+    save_path = f"{OUTPUT_FIGURES}/SpeciesTree_GeneDup_ggtree_enhanced",
     # output_formats = c("png", "pdf", "svg")
     output_formats = c("png", "pdf")
 )
@@ -836,8 +862,8 @@ print(p_gene_dup)
 ```{r}
 # Create comparison plots with different visualization schemes
 tree_comparisons <- create_tree_comparison_plots(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted.txt",
-    save_base_path = "./Notebooks/Figures/SpeciesTree_comparison"
+    newick_file_path = SPECIES_TREE,
+    save_base_path = f"{OUTPUT_FIGURES}/SpeciesTree_comparison"
 )
 
 # Display all comparison plots
@@ -851,7 +877,7 @@ for (plot_name in names(tree_comparisons)) {
 ```{r}
 # Advanced tree with multiple annotation layers
 p_advanced <- plot_phylogenetic_tree_ggtree(
-    newick_file_path = "./Outputs/OrthoFinder/Results_Apr25/Species_Tree/SpeciesTree_rooted_node_labels.txt",
+    newick_file_path = SPECIES_TREE_NODE_LABELS,
     layout = "rectangular",
     color_scheme = "clade_auto",
     color_palette = "Spectral",
@@ -872,12 +898,635 @@ p_advanced <- plot_phylogenetic_tree_ggtree(
     plot_width = 20,
     plot_height = 14,
     theme_style = "publication",
-    save_path = "./Notebooks/Figures/SpeciesTree_advanced_multi_annotated",
+    save_path = f"{OUTPUT_FIGURES}/SpeciesTree_advanced_multi_annotated",
     output_formats = c("png", "pdf"), # output_formats = c("png", "pdf", "svg"),
     dpi = 600  # Ultra-high resolution for publication
 )
 
 print(p_advanced)
+```
+
+## 1.6 Time-Calibrated Species Tree (Chronogram with MYA)
+
+This section converts the OrthoFinder species tree from substitution-based branch lengths to a **time-calibrated chronogram** with divergence times in **millions of years ago (MYA)**. This is accomplished using:
+
+1. **Penalized likelihood rate-smoothing** via `ape::chronos()` (Sanderson 2002)
+2. **Calibration points** from the TimeTree database and published literature
+3. **Visualization** with `ggtree` + `revts()` for reversed time axis
+
+### Calibration Sources
+
+| Node | Age (Ma) | Range (Ma) | Source |
+|------|----------|------------|--------|
+| Root: Nemacheilidae vs Cyprinidae | ~100 | 80–120 | Hirt et al. 2017; Cypriniformes phylogenomics |
+| *Danio rerio* vs Cyprininae | ~49 | 40–60 | Xu et al. 2019 (Nature Comm); TimeTree 5 |
+| *Carassius auratus* vs *Cyprinus carpio* | ~23 | 10–35 | Xu et al. 2019; TimeTree 5 |
+
+### References
+- Hirt MV et al. (2017) Phylogenetic relationships of the cypriniform family Xenocyprididae. *Biological Journal of the Linnean Society*.
+- Xu P et al. (2019) The allotetraploid origin and asymmetrical genome evolution of the common carp *Cyprinus carpio*. *Nature Communications* 10:4625.
+- Kumar S et al. (2022) TimeTree 5: An Expanded Resource for Species Divergence Times. *Molecular Biology and Evolution* 39(8):msac174.
+- Sanderson MJ (2002) Estimating absolute rates of molecular evolution and divergence times: a penalized likelihood approach. *Molecular Biology and Evolution* 19(1):101-109.
+
+### 1.6.1 Time Calibration with R ape::chronos()
+
+```{r}
+# =============================================================================
+# Time-Calibrated Chronogram: Convert OrthoFinder species tree to MYA
+# =============================================================================
+# This section uses penalized likelihood (ape::chronos) to convert
+# substitution-based branch lengths to divergence times in MYA.
+# Calibration points are derived from TimeTree 5 and published literature.
+# =============================================================================
+
+library(ape)
+library(ggtree)
+library(treeio)
+library(ggplot2)
+
+# Ensure path variables are available in R
+# (Quarto cross-language sharing should provide SPECIES_TREE and OUTPUT_FIGURES
+#  from the Python cells above, but we add a fallback using R config loader)
+if (!exists("SPECIES_TREE") || !exists("OUTPUT_FIGURES")) {
+    cat("Loading R configuration...\n")
+    source("./Notebooks/config/load_config.R")
+    paths <- load_paths()
+    SPECIES_TREE <- get_path("orthofinder.species_tree")
+    OUTPUT_FIGURES <- get_path("outputs.figures")
+    cat("SPECIES_TREE:", SPECIES_TREE, "\n")
+    cat("OUTPUT_FIGURES:", OUTPUT_FIGURES, "\n")
+}
+
+# Check if deeptime is available for geological timescale bars
+deeptime_available <- requireNamespace("deeptime", quietly = TRUE)
+if (deeptime_available) {
+    library(deeptime)
+    cat("deeptime package loaded — geological timescale bars available\n")
+} else {
+    cat("deeptime package not installed — geological timescale bars disabled\n")
+    cat("Install with: install.packages('deeptime')\n")
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 1: Load the OrthoFinder species tree
+# ─────────────────────────────────────────────────────────────────────
+tree <- read.tree(SPECIES_TREE)
+cat("Species tree loaded with", Ntip(tree), "tips\n")
+cat("Tips:", paste(tree$tip.label, collapse = ", "), "\n\n")
+
+# Ladderize for better visualization
+tree <- ladderize(tree)
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 2: Define calibration points from literature
+# ─────────────────────────────────────────────────────────────────────
+# We dynamically detect which species pairs are present in the tree
+# and apply the corresponding calibration points.
+
+# Known calibration data: list of species pairs with divergence times
+# Each entry: list(sp1, sp2, age_min_Ma, age_max_Ma, source)
+calibration_database <- list(
+    # Root calibration: Nemacheilidae (Triplophysa) vs Cyprinidae
+    # Cypriniformes divergence — Hirt et al. 2017, Zhu et al. 2017
+    list(
+        sp1 = c("Triplophysa_tibetana", "Triplophysa_bombifrons",
+                 "Triplophysa_dalaica", "Triplophysa_pappenheimi",
+                 "Triplophysa_yaopeizhii"),
+        sp2 = c("Danio_rerio", "Cyprinus_carpio", "Carassius_auratus"),
+        age_min = 80, age_max = 120,
+        source = "Root: Nemacheilidae vs Cyprinidae (Hirt et al. 2017)"
+    ),
+    # Danio rerio vs Cyprininae
+    # D. rerio–C. carpio ~60 Ma (Xu et al. 2019), D. rerio–C. idella ~44 Ma
+    # TimeTree consensus ~49 Ma
+    list(
+        sp1 = c("Danio_rerio"),
+        sp2 = c("Cyprinus_carpio", "Carassius_auratus", "Labeo_rohita",
+                 "Sinocyclocheilus_grahami", "Aspiorhynchus_laticeps",
+                 "Schizothorax_macropogon", "Onychostoma_macrolepis",
+                 "Anabarilius_grahami", "Diptychus_maculatus",
+                 "Oxygymnocypris_stewartii", "Gymnocypris_eckloni",
+                 "Schizopygopsis_younghusbandi"),
+        age_min = 40, age_max = 60,
+        source = "Danio vs Cyprininae (Xu et al. 2019; TimeTree 5)"
+    ),
+    # Carassius auratus vs Cyprinus carpio
+    # Progenitor divergence ~23 Ma (Xu et al. 2019, Nature Comm)
+    # TimeTree range: 10.1–61.0 Ma; conservative: 10–35 Ma
+    list(
+        sp1 = c("Carassius_auratus"),
+        sp2 = c("Cyprinus_carpio"),
+        age_min = 10, age_max = 35,
+        source = "Carassius vs Cyprinus (Xu et al. 2019; TimeTree 5)"
+    )
+)
+
+# Find applicable calibration points based on species in the tree
+tip_labels <- tree$tip.label
+calibration_nodes <- c()
+calibration_age_min <- c()
+calibration_age_max <- c()
+calibration_sources <- c()
+
+for (cal in calibration_database) {
+    # Find which species from each group are in the tree
+    sp1_in_tree <- intersect(cal$sp1, tip_labels)
+    sp2_in_tree <- intersect(cal$sp2, tip_labels)
+
+    if (length(sp1_in_tree) > 0 && length(sp2_in_tree) > 0) {
+        # Find the MRCA node for the first available species from each group
+        all_species_for_mrca <- c(sp1_in_tree[1], sp2_in_tree[1])
+        node_num <- getMRCA(tree, all_species_for_mrca)
+
+        if (!is.null(node_num) && !is.na(node_num)) {
+            calibration_nodes <- c(calibration_nodes, node_num)
+            calibration_age_min <- c(calibration_age_min, cal$age_min)
+            calibration_age_max <- c(calibration_age_max, cal$age_max)
+            calibration_sources <- c(calibration_sources, cal$source)
+            cat("✓ Calibration applied:", cal$source, "\n")
+            cat("  Node:", node_num,
+                "| Species:", all_species_for_mrca[1], "&", all_species_for_mrca[2],
+                "| Age:", cal$age_min, "-", cal$age_max, "Ma\n")
+        }
+    }
+}
+
+cat("\nTotal calibration points:", length(calibration_nodes), "\n")
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 3: Create calibration data frame and run chronos()
+# ─────────────────────────────────────────────────────────────────────
+if (length(calibration_nodes) == 0) {
+    stop("No calibration points could be matched to species in the tree!")
+}
+
+calib_df <- data.frame(
+    node = calibration_nodes,
+    age.min = calibration_age_min,
+    age.max = calibration_age_max,
+    soft.bounds = rep(FALSE, length(calibration_nodes))
+)
+
+cat("\nCalibration data frame:\n")
+print(calib_df)
+
+# Run penalized likelihood dating with correlated rates model
+# lambda = 1 is a reasonable default; model = "correlated" allows rate variation
+cat("\nRunning ape::chronos() with correlated rates model...\n")
+chrono_tree <- chronos(
+    tree,
+    calibration = calib_df,
+    lambda = 1,
+    model = "correlated"
+)
+
+# Verify ultrametric property
+cat("\nIs ultrametric:", is.ultrametric(chrono_tree), "\n")
+
+# Get root age and node depths
+node_depths <- node.depth.edgelength(chrono_tree)
+root_age <- max(node_depths)
+cat("Estimated root age:", round(root_age, 2), "MYA\n")
+
+# Print all tip-to-root distances (should be equal for ultrametric tree)
+tip_distances <- node_depths[1:Ntip(chrono_tree)]
+cat("Tip-to-root distances (range):",
+    round(min(tip_distances), 4), "-", round(max(tip_distances), 4), "\n")
+
+# Print estimated divergence times for all internal nodes
+cat("\nEstimated divergence times for internal nodes:\n")
+for (i in (Ntip(chrono_tree) + 1):(Ntip(chrono_tree) + chrono_tree$Nnode)) {
+    # Use ape::extract.clade to get tip labels (no phytools dependency)
+    subclade <- extract.clade(chrono_tree, i)
+    desc_names <- subclade$tip.label
+    node_age <- root_age - node_depths[i]
+    if (length(desc_names) <= 4) {
+        cat(sprintf("  Node %d (%.1f Ma): %s\n", i, node_age,
+                    paste(desc_names, collapse = " + ")))
+    } else {
+        cat(sprintf("  Node %d (%.1f Ma): %s + ... (%d spp)\n", i, node_age,
+                    paste(desc_names[1:2], collapse = " + "), length(desc_names)))
+    }
+}
+
+# Save the calibrated tree for downstream use
+chrono_tree_path <- paste0(dirname(SPECIES_TREE), "/SpeciesTree_chronogram_MYA.tre")
+write.tree(chrono_tree, chrono_tree_path)
+cat("\n✓ Chronogram saved to:", chrono_tree_path, "\n")
+```
+
+### 1.6.2 Publication-Quality Chronogram Visualization (ggtree)
+
+```{r}
+# =============================================================================
+# Time-Calibrated Tree Visualization with MYA Axis
+# =============================================================================
+
+# Helper function to format species names (replace _ with space for display)
+format_species_name <- function(name) {
+    gsub("_", " ", name)
+}
+
+# Calculate axis parameters from root age
+root_age_rounded <- ceiling(root_age / 10) * 10  # Round up to nearest 10
+axis_breaks <- seq(0, root_age_rounded, by = 10)
+if (root_age_rounded > 80) {
+    axis_breaks <- seq(0, root_age_rounded, by = 20)
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Plot 1: Rectangular chronogram with MYA axis (publication-ready)
+# ─────────────────────────────────────────────────────────────────────
+
+# Create base ggtree plot with divergence time labels at nodes
+p_chrono <- ggtree(chrono_tree, size = 2.0, color = "#2E4057") +
+    geom_tiplab(
+        aes(label = gsub("_", " ", label)),
+        fontface = "italic",
+        size = 7,            # ~24.5pt — publication-ready
+        offset = root_age * 0.02,
+        color = "#1A1A1A"
+    ) +
+    geom_nodepoint(
+        color = "#4A90D9",
+        size = 4,
+        alpha = 0.8,
+        shape = 16
+    ) +
+    # Add divergence time (MYA) labels directly on the tree at each node
+    geom_text2(
+        aes(
+            label = ifelse(!isTip, sprintf("%.1f", root_age - x), ""),
+            subset = !isTip
+        ),
+        size = 5.5,          # ~19pt — clearly readable
+        color = "#CC4444",
+        fontface = "bold",
+        nudge_y = 0.35,
+        nudge_x = -root_age * 0.005
+    ) +
+    theme_tree2()
+
+# Reverse time scale: past on left, present (0) on right
+p_chrono_mya <- revts(p_chrono) +
+    scale_x_continuous(
+        name = "Divergence Time (Million Years Ago)",
+        breaks = -rev(axis_breaks),
+        labels = rev(axis_breaks),
+        expand = expansion(mult = c(0.02, 0.25))
+    ) +
+    theme(
+        axis.title.x = element_text(size = 22, face = "bold", color = "#1A1A1A",
+                                     family = "serif"),
+        axis.text.x = element_text(size = 20, color = "#333333", family = "serif"),
+        plot.title = element_text(size = 26, face = "bold", hjust = 0.5,
+                                   color = "#1A1A1A", family = "serif"),
+        plot.subtitle = element_text(size = 18, hjust = 0.5, color = "#666666",
+                                      family = "serif"),
+        plot.margin = margin(10, 40, 10, 10)
+    ) +
+    labs(
+        title = "Time-Calibrated Species Phylogeny (Chronogram)",
+        subtitle = paste0("Penalized likelihood dating (chronos, λ=1) | Root age: ",
+                          round(root_age, 1), " MYA")
+    )
+
+print(p_chrono_mya)
+
+# Save rectangular chronogram
+ggsave(
+    filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_MYA_ggtree.png"),
+    plot = p_chrono_mya,
+    width = 18, height = 12, dpi = 300, bg = "white"
+)
+ggsave(
+    filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_MYA_ggtree.pdf"),
+    plot = p_chrono_mya,
+    width = 18, height = 12, bg = "white"
+)
+cat("✓ Rectangular chronogram saved\n")
+```
+
+### 1.6.3 Chronogram with Node Age Labels
+
+```{r}
+# =============================================================================
+# Chronogram with divergence time labels at each internal node
+# =============================================================================
+
+# Calculate node ages for annotation
+n_tips <- Ntip(chrono_tree)
+n_internal <- chrono_tree$Nnode
+node_ages <- data.frame(
+    node = (n_tips + 1):(n_tips + n_internal),
+    age = round(root_age - node_depths[(n_tips + 1):(n_tips + n_internal)], 1)
+)
+
+# Create chronogram with node age annotations
+p_chrono_annotated <- ggtree(chrono_tree, size = 2.0, color = "#2E4057") +
+    geom_tiplab(
+        aes(label = gsub("_", " ", label)),
+        fontface = "italic",
+        size = 7,            # ~24.5pt — publication-ready
+        offset = root_age * 0.02,
+        color = "#1A1A1A"
+    ) +
+    geom_nodepoint(
+        color = "#4A90D9",
+        size = 4,
+        alpha = 0.8,
+        shape = 16
+    ) +
+    # Add divergence time labels at nodes
+    geom_text2(
+        aes(
+            label = ifelse(!isTip, sprintf("%.1f", root_age - x), ""),
+            subset = !isTip
+        ),
+        size = 5.5,          # ~19pt — clearly readable
+        color = "#CC4444",
+        fontface = "bold",
+        nudge_y = 0.35,
+        nudge_x = -root_age * 0.005
+    ) +
+    theme_tree2()
+
+# Apply reversed time scale
+p_chrono_annotated <- revts(p_chrono_annotated) +
+    scale_x_continuous(
+        name = "Divergence Time (Million Years Ago)",
+        breaks = -rev(axis_breaks),
+        labels = rev(axis_breaks),
+        expand = expansion(mult = c(0.02, 0.25))
+    ) +
+    theme(
+        axis.title.x = element_text(size = 22, face = "bold", color = "#1A1A1A",
+                                     family = "serif"),
+        axis.text.x = element_text(size = 20, color = "#333333", family = "serif"),
+        plot.title = element_text(size = 26, face = "bold", hjust = 0.5,
+                                   color = "#1A1A1A", family = "serif"),
+        plot.subtitle = element_text(size = 18, hjust = 0.5, color = "#666666",
+                                      family = "serif"),
+        plot.margin = margin(10, 40, 10, 10)
+    ) +
+    labs(
+        title = "Time-Calibrated Species Phylogeny with Divergence Times",
+        subtitle = paste0("Node labels show estimated divergence times (MYA) | ",
+                          "Calibrated with ", length(calibration_nodes),
+                          " TimeTree/literature calibration points")
+    )
+
+print(p_chrono_annotated)
+
+# Save annotated chronogram
+ggsave(
+    filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_MYA_annotated_ggtree.png"),
+    plot = p_chrono_annotated,
+    width = 18, height = 12, dpi = 300, bg = "white"
+)
+ggsave(
+    filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_MYA_annotated_ggtree.pdf"),
+    plot = p_chrono_annotated,
+    width = 18, height = 12, bg = "white"
+)
+cat("✓ Annotated chronogram saved\n")
+```
+
+### 1.6.4 Chronogram with Geological Timescale (deeptime)
+
+```{r}
+# =============================================================================
+# Chronogram with Geological Epoch/Period Bars (requires 'deeptime' package)
+# =============================================================================
+# Install deeptime if needed: install.packages("deeptime")
+# The deeptime package adds geological timescale bars (epochs, periods)
+# to phylogenetic trees, providing geological context for divergence events.
+# =============================================================================
+
+if (deeptime_available) {
+    cat("Creating chronogram with geological timescale bars...\n")
+
+    # Build the base plot
+    p_geo_base <- ggtree(chrono_tree, size = 2.0, color = "#2E4057") +
+        geom_tiplab(
+            aes(label = gsub("_", " ", label)),
+            fontface = "italic",
+            size = 7,            # ~24.5pt — publication-ready
+            offset = root_age * 0.02,
+            color = "#1A1A1A"
+        ) +
+        geom_nodepoint(
+            color = "#4A90D9",
+            size = 4,
+            alpha = 0.8,
+            shape = 16
+        ) +
+        # Add divergence time labels directly on the tree
+        geom_text2(
+            aes(
+                label = ifelse(!isTip, sprintf("%.1f", root_age - x), ""),
+                subset = !isTip
+            ),
+            size = 5.5,          # ~19pt — clearly readable
+            color = "#CC4444",
+            fontface = "bold",
+            nudge_y = 0.35
+        ) +
+        theme_tree2()
+
+    # Add geological timescale using coord_geo()
+    # NOTE: xlim right bound must extend past 0 to leave room for tip labels
+    # (species names), otherwise coord_geo clips them at x=0 (present).
+    p_geo <- revts(p_geo_base) +
+        coord_geo(
+            xlim = c(-(root_age_rounded + 10), root_age * 0.30),
+            ylim = c(-2, Ntip(chrono_tree) + 1),
+            neg = TRUE,
+            abbrv = list(TRUE, FALSE),   # Abbreviate narrow epochs, keep periods full
+            pos = list("bottom", "bottom"),
+            dat = list("epochs", "periods"),
+            size = list(2.5, 4.5),       # Smaller epoch text to avoid overlap
+            center_end_labels = TRUE
+        ) +
+        scale_x_continuous(
+            breaks = -rev(axis_breaks),
+            labels = rev(axis_breaks)
+        ) +
+        theme(
+            axis.title.x = element_blank(),
+            axis.text.x = element_text(size = 20, color = "#333333"),
+            plot.title = element_text(size = 26, face = "bold", hjust = 0.5,
+                                       family = "serif"),
+            plot.subtitle = element_text(size = 18, hjust = 0.5, color = "#666666",
+                                          family = "serif"),
+            plot.margin = margin(10, 40, 10, 10)
+        ) +
+        labs(
+            title = "Time-Calibrated Species Phylogeny with Geological Context",
+            subtitle = paste0("Epochs and periods shown below | Root age: ",
+                              round(root_age, 1), " MYA")
+        )
+
+    print(p_geo)
+
+    # Save geological context chronogram
+    ggsave(
+        filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_geological_ggtree.png"),
+        plot = p_geo,
+        width = 20, height = 14, dpi = 300, bg = "white"
+    )
+    ggsave(
+        filename = paste0(OUTPUT_FIGURES, "/SpeciesTree_chronogram_geological_ggtree.pdf"),
+        plot = p_geo,
+        width = 20, height = 14, bg = "white"
+    )
+    cat("✓ Geological context chronogram saved\n")
+
+} else {
+    cat("Skipping geological timescale visualization (deeptime not installed)\n")
+    cat("To enable, install deeptime: install.packages('deeptime')\n")
+}
+```
+
+### 1.6.5 Time-Calibrated Tree Visualization (Python - Bio.Phylo)
+
+```{python}
+# =============================================================================
+# Python Visualization of the Time-Calibrated Chronogram
+# =============================================================================
+# This cell reads the R-calibrated chronogram and creates a matplotlib plot
+# with MYA axis labels. If the R-calibrated tree is not yet available,
+# it falls back to a simple linear rescaling approach.
+# =============================================================================
+
+from Bio import Phylo
+import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+
+# Try to load the R-calibrated chronogram first
+chrono_tree_path = Path(SPECIES_TREE).parent / "SpeciesTree_chronogram_MYA.tre"
+
+if chrono_tree_path.exists():
+    tree = Phylo.read(str(chrono_tree_path), "newick")
+    source_label = "ape::chronos() penalized likelihood"
+    print(f"✓ Loaded R-calibrated chronogram from {chrono_tree_path}")
+else:
+    # Fallback: simple linear rescaling
+    # Scale the OrthoFinder tree so root depth = estimated root age
+    tree = Phylo.read(SPECIES_TREE, "newick")
+    
+    # Known approximate root age from literature (Nemacheilidae vs Cyprinidae)
+    ESTIMATED_ROOT_AGE_MYA = 100.0
+    
+    # Calculate current max root-to-tip distance
+    depths = tree.depths()
+    max_depth = max(depths.values())
+    scale_factor = ESTIMATED_ROOT_AGE_MYA / max_depth if max_depth > 0 else 1.0
+    
+    # Rescale all branch lengths
+    for clade in tree.find_clades():
+        if clade.branch_length is not None:
+            clade.branch_length *= scale_factor
+    
+    source_label = f"Linear rescaling (root = {ESTIMATED_ROOT_AGE_MYA} MYA)"
+    print(f"⚠ R-calibrated tree not found. Using linear rescaling.")
+    print(f"  Root age set to {ESTIMATED_ROOT_AGE_MYA} MYA")
+
+# Calculate tree depth for axis configuration
+depths = tree.depths()
+max_depth = max(depths.values())
+root_age_mya = max_depth
+
+print(f"Root age: {root_age_mya:.1f} MYA")
+print(f"Source: {source_label}")
+
+# ─────────────────────────────────────────────────────────────────────
+# Create publication-quality plot
+# ─────────────────────────────────────────────────────────────────────
+plt.style.use('default')
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+    'font.size': 14,
+    'axes.linewidth': 1.2,
+    'figure.facecolor': 'white',
+    'axes.facecolor': 'white'
+})
+
+fig, ax = plt.subplots(1, 1, figsize=(16, 12), facecolor='white')
+
+# Draw the tree
+Phylo.draw(
+    tree,
+    axes=ax,
+    do_show=False,
+    branch_labels=None,
+    label_func=lambda x: x.name.replace('_', ' ') if x.name else ''
+)
+
+# Customize branch appearance
+for line in ax.get_lines():
+    line.set_color('#2E4057')
+    line.set_linewidth(2.0)
+
+# Customize text labels
+for text in ax.texts:
+    text_content = text.get_text().strip()
+    if text_content:
+        text.set_color('#1A1A1A')
+        text.set_fontsize(16)
+        text.set_fontstyle('italic')
+
+# Configure MYA axis (reverse direction: root age on left, 0 on right)
+ax.set_xlim(-root_age_mya * 0.02, root_age_mya * 1.15)
+
+# Create MYA labels: reverse so max is on left, 0 on right
+tick_interval = 20 if root_age_mya > 80 else 10
+tick_positions = np.arange(0, root_age_mya + tick_interval, tick_interval)
+
+# The x-axis in Bio.Phylo goes from 0 (root) to max (tips)
+# We want to label it as MYA decreasing from root_age to 0
+ax.set_xticks(tick_positions)
+ax.set_xticklabels([f'{root_age_mya - t:.0f}' for t in tick_positions], fontsize=14)
+ax.set_xlabel('Divergence Time (Million Years Ago)', fontsize=16, fontweight='bold')
+
+# Remove unnecessary spines
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.spines['left'].set_visible(False)
+ax.spines['bottom'].set_visible(True)
+ax.spines['bottom'].set_color('#333333')
+
+# Add subtle grid lines at major time points
+for t in tick_positions[1:]:
+    ax.axvline(x=t, color='#DDDDDD', linewidth=0.5, linestyle='--', zorder=0)
+
+# Add title
+ax.set_title(
+    'Time-Calibrated Species Phylogeny (Chronogram)',
+    fontsize=20, fontweight='bold', color='#1A1A1A', pad=20
+)
+
+# Add source annotation
+ax.text(
+    0.02, 0.02,
+    f'Calibration: {source_label}',
+    transform=ax.transAxes,
+    fontsize=10, color='#888888',
+    verticalalignment='bottom'
+)
+
+plt.tight_layout()
+
+# Save
+plt.savefig(f"{OUTPUT_FIGURES}/SpeciesTree_chronogram_MYA_python.png",
+            dpi=300, bbox_inches='tight', facecolor='white')
+plt.savefig(f"{OUTPUT_FIGURES}/SpeciesTree_chronogram_MYA_python.pdf",
+            bbox_inches='tight', facecolor='white')
+print(f"✓ Python chronogram saved to {OUTPUT_FIGURES}/SpeciesTree_chronogram_MYA_python.png|pdf")
+
+plt.show()
 ```
 
 ## 2. Individual Orthogroup Analysis
@@ -915,8 +1564,8 @@ def plot_orthogroup_bar_chart(tsv_file_path, orthogroup_id):
     
     # Show the plot
     plt.tight_layout()
-    plt.savefig("./Notebooks/Figures/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.png")
-    plt.savefig("./Notebooks/Figures/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.pdf")
+    plt.savefig(f"{OUTPUT_FIGURES}/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.png")
+    plt.savefig(f"{OUTPUT_FIGURES}/OG_bars/" + orthogroup_id + "_OG_genecount_barplot.pdf")
     plt.show()
 ```
 
@@ -924,26 +1573,26 @@ def plot_orthogroup_bar_chart(tsv_file_path, orthogroup_id):
 
 #### OG0000000
 ```{python}
-plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', 'OG0000000')
+plot_orthogroup_bar_chart(ORTHOGROUPS_COUNT, 'OG0000000')
 ```
 
 #### OG0000001
 ```{python}
-plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', 'OG0000001')
+plot_orthogroup_bar_chart(ORTHOGROUPS_COUNT, 'OG0000001')
 ```
 
 ### 2.3 Batch Generation of All Orthogroup Bar Charts
 
 ```{python}
 # Generate bar charts for all orthogroups
-df = pd.read_csv('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', sep='\t')
+df = pd.read_csv(ORTHOGROUPS_COUNT, sep='\t')
 orthogroup_list = df['Orthogroup'].tolist()
 
 print(f"Generating bar charts for {len(orthogroup_list)} orthogroups...")
 for i, orthogroup in enumerate(orthogroup_list):
     if i % 1000 == 0:
         print(f"Progress: {i}/{len(orthogroup_list)} orthogroups processed")
-    plot_orthogroup_bar_chart('./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv', orthogroup)
+    plot_orthogroup_bar_chart(ORTHOGROUPS_COUNT, orthogroup)
 print("All orthogroup bar charts generated!")
 ```
 
@@ -1031,17 +1680,17 @@ def prune_and_plot_tree(newick_file_path, max_depth=2, figsize=(13, 10), orienta
 ### 3.2 Example Gene Trees
 
 #### OG0000000 Gene Tree
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt)
+- Tree File: `{orthofinder.gene_trees}/OG0000000_tree.txt` (from config)
 
 ```{python}
-prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000000_tree.txt', max_depth=8, save_path="./Notebooks/Figures/OG0000000_gene_tree")
+prune_and_plot_tree(f'{GENE_TREES_DIR}/OG0000000_tree.txt', max_depth=8, save_path=f"{OUTPUT_FIGURES}/OG0000000_gene_tree")
 ```
 
 #### OG0000001 Gene Tree
-- [Tree File](../Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt)
+- Tree File: `{orthofinder.gene_trees}/OG0000001_tree.txt` (from config)
 
 ```{python}
-prune_and_plot_tree('./Outputs/OrthoFinder/Results_Apr25/Gene_Trees/OG0000001_tree.txt', max_depth=8, save_path="./Notebooks/Figures/OG0000001_gene_tree")
+prune_and_plot_tree(f'{GENE_TREES_DIR}/OG0000001_tree.txt', max_depth=8, save_path=f"{OUTPUT_FIGURES}/OG0000001_gene_tree")
 ```
 
 ## 4. Comprehensive Heatmap Analysis
@@ -1175,8 +1824,13 @@ def create_publication_heatmap(
     
     # Apply data transformations
     data_processed = data.copy()
+
+    # Format species names for display (replace underscores with spaces)
+    data_processed.columns = data_processed.columns.str.replace('_', ' ')
+    data_processed.index = data_processed.index.str.replace('_', ' ')
+
     transform_label = ""
-    
+
     if data_transform == 'log10':
         data_processed = np.log10(data_processed + 1)  # Add 1 to handle zeros
         transform_label = " (log₁₀ transformed)"
@@ -1657,14 +2311,15 @@ def filter_species_specific_orthogroups(
 ### 4.2 Data Overview
 
 ```{python}
-!head -n 10 ./Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv
+import subprocess
+subprocess.run(['head', '-n', '10', ORTHOGROUPS_COUNT])
 ```
 
 ### 4.3 Top Variance Heatmap
 
 ```{python}
 # Load and process the data
-file_path = './Outputs/OrthoFinder/Results_Apr25/Orthogroups/Orthogroups.GeneCount.tsv'
+file_path = ORTHOGROUPS_COUNT
 data = load_and_process_orthogroup_data(file_path)
 
 # Filter by variance and create heatmap
@@ -1674,22 +2329,25 @@ create_publication_heatmap(
     data=top_variance_data,
     title='Gene Counts Heatmap for Top 100 Orthogroups with Highest Variance',
     cmap='coolwarm',
-    save_path="./Notebooks/Figures/heatmap_top_variance",
+    save_path=f"{OUTPUT_FIGURES}/heatmap_top_variance",
     figsize=(14, 12),
     publication_ready=True
 )
 ```
 
-### 4.4 Aspiorhynchus_laticeps-Focused Analysis
+### 4.4 Focal Species-Focused Analysis
 
 #### 4.4.1 Increased Gene Count Heatmaps
 
 ##### Maximum Count Analysis (With Variance Sorting)
 ```{python}
 # Same analysis but with variance filtering
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+
 max_count_variance_data, _ = filter_orthogroups_by_species_extreme(
     data=data,
-    target_species='Aspiorhynchus_laticeps',
+    target_species=FOCAL_SPECIES,
     extreme_type='max',
     apply_variance_filter=True,
     variance_top_n=50
@@ -1697,9 +2355,9 @@ max_count_variance_data, _ = filter_orthogroups_by_species_extreme(
 
 create_publication_heatmap(
     data=max_count_variance_data,
-    title="Gene Counts: 'Aspiorhynchus_laticeps' Maximum Count (Top 50 by Variance)",
+    title=f"Gene Counts: '{focal_display}' Maximum Count (Top 50 by Variance)",
     cmap='coolwarm',
-    save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_max_variance",
+    save_path=f"{OUTPUT_FIGURES}/heatmap_Aspiorhynchus_max_variance",
     figsize=(16, 16),
     publication_ready=True
 )
@@ -1710,9 +2368,12 @@ create_publication_heatmap(
 ##### Minimum Count Analysis (With Variance Sorting)
 ```{python}
 # Same analysis but with variance filtering
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+
 min_count_variance_data, _ = filter_orthogroups_by_species_extreme(
     data=data,
-    target_species='Aspiorhynchus_laticeps',
+    target_species=FOCAL_SPECIES,
     extreme_type='min',
     apply_variance_filter=True,
     variance_top_n=50
@@ -1720,9 +2381,9 @@ min_count_variance_data, _ = filter_orthogroups_by_species_extreme(
 
 create_publication_heatmap(
     data=min_count_variance_data,
-    title="Gene Counts: 'Aspiorhynchus_laticeps' Minimum Count (Top 50 by Variance)",
+    title=f"Gene Counts: '{focal_display}' Minimum Count (Top 50 by Variance)",
     cmap='coolwarm',
-    save_path="./Notebooks/Figures/heatmap_Aspiorhynchus_min_variance",
+    save_path=f"{OUTPUT_FIGURES}/heatmap_Aspiorhynchus_min_variance",
     figsize=(16, 16),
     publication_ready=True
 )
@@ -1733,18 +2394,21 @@ create_publication_heatmap(
 ##### Species-Specific Analysis (With Variance Sorting)
 ```{python}
 # Same analysis but with variance filtering
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+
 species_specific_variance_data, _ = filter_species_specific_orthogroups(
     data=data,
-    target_species='Aspiorhynchus_laticeps',
+    target_species=FOCAL_SPECIES,
     apply_variance_filter=True,
     variance_top_n=50
 )
 
 create_publication_heatmap(
     data=species_specific_variance_data,
-    title="Gene Counts: 'Aspiorhynchus_laticeps' Species-Specific (Top 50 by Variance)",
+    title=f"Gene Counts: '{focal_display}' Species-Specific (Top 50 by Variance)",
     cmap='coolwarm',
-    save_path="./Notebooks/Figures/heatmap_unique_nonzero_Aspiorhynchus_variance",
+    save_path=f"{OUTPUT_FIGURES}/heatmap_unique_nonzero_Aspiorhynchus_variance",
     figsize=(16, 16),
     publication_ready=True
 )
@@ -1873,8 +2537,13 @@ def create_species_overlap_heatmap(
         
         # Apply data transformations
         data_processed = data.copy()
+
+        # Format species names for display (replace underscores with spaces)
+        data_processed.columns = data_processed.columns.str.replace('_', ' ')
+        data_processed.index = data_processed.index.str.replace('_', ' ')
+
         transform_label = ""
-        
+
         if data_transform == 'log10':
             data_processed = np.log10(data_processed + 1)  # Add 1 to handle zeros
             transform_label = " (log₁₀ transformed)"
@@ -2275,22 +2944,89 @@ def analyze_species_overlap_statistics(data: pd.DataFrame) -> dict:
     }
     
     return stats
+
+def compute_species_overlap_from_genecount(genecount_path: str) -> pd.DataFrame:
+    """
+    Compute species overlap matrix from OrthoFinder's Orthogroups.GeneCount.tsv file.
+
+    The species overlap matrix counts how many orthogroups are shared between each
+    pair of species (i.e., both species have at least one gene in that orthogroup).
+
+    This is useful when OrthoFinder doesn't generate Orthogroups_SpeciesOverlaps.tsv
+    directly (which happens in some run configurations).
+
+    Parameters:
+    - genecount_path: str, path to Orthogroups.GeneCount.tsv file
+
+    Returns:
+    - pd.DataFrame: symmetric matrix of shared orthogroup counts between species pairs
+    """
+    # Load gene count data
+    genecount = pd.read_csv(genecount_path, sep='\t', index_col=0)
+
+    # Remove the 'Total' column if present
+    if 'Total' in genecount.columns:
+        genecount = genecount.drop(columns=['Total'])
+
+    # Get species list
+    species = genecount.columns.tolist()
+    n_species = len(species)
+
+    # Convert to presence/absence matrix (1 if gene_count > 0, else 0)
+    presence = (genecount > 0).astype(int)
+
+    # Compute overlap matrix: dot product of presence matrix with its transpose
+    # Each element [i,j] = number of orthogroups where both species i and j have genes
+    overlap_matrix = presence.T.dot(presence)
+
+    # Create DataFrame with species names as index and columns
+    overlap_df = pd.DataFrame(
+        overlap_matrix.values,
+        index=species,
+        columns=species
+    )
+
+    print(f"Computed species overlap matrix from {len(genecount)} orthogroups")
+    print(f"Species: {n_species}")
+
+    return overlap_df
 ```
 
 ### 5.2 Species Overlap Heatmap (Non-normalized)
 
 ```{python}
-# Create non-normalized species overlap heatmap
-file_path = './Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Orthogroups_SpeciesOverlaps.tsv'
+# Compute species overlap from GeneCount (since SpeciesOverlaps.tsv may not exist)
+genecount_path = f'{ORTHOFINDER_RESULTS}/Orthogroups/Orthogroups.GeneCount.tsv'
+overlap_data = compute_species_overlap_from_genecount(genecount_path)
 
-overlap_data = create_species_overlap_heatmap(
-    file_path=file_path,
-    save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps",
+# Save the computed overlap data for reference
+overlap_output_path = f'{OUTPUT_FIGURES}/Orthogroups_SpeciesOverlaps_computed.tsv'
+overlap_data.to_csv(overlap_output_path, sep='\t')
+print(f"Saved species overlap matrix to: {overlap_output_path}")
+```
+
+```{python}
+# Create non-normalized species overlap heatmap
+# Note: We pass the pre-computed overlap_data directly instead of a file path
+import tempfile
+import os
+
+# Save overlap_data to a temporary file for the heatmap function
+with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+    overlap_data.to_csv(f, sep='\t')
+    temp_overlap_path = f.name
+
+overlap_result = create_species_overlap_heatmap(
+    file_path=temp_overlap_path,
+    save_path=f"{OUTPUT_FIGURES}/Orthogroups_SpeciesOverlaps",
     cmap='coolwarm',
     normalize=False,
     figsize=(12, 10),
     publication_ready=True
 )
+
+# Clean up temp file
+os.unlink(temp_overlap_path)
 
 # Print basic statistics
 stats = analyze_species_overlap_statistics(overlap_data)
@@ -2306,14 +3042,20 @@ print(f"Standard deviation: {stats['std_overlap']:.2f}")
 
 ```{python}
 # Create normalized species overlap heatmap
+with tempfile.NamedTemporaryFile(mode='w', suffix='.tsv', delete=False) as f:
+    overlap_data.to_csv(f, sep='\t')
+    temp_overlap_path = f.name
+
 create_species_overlap_heatmap(
-    file_path=file_path,
-    save_path="./Notebooks/Figures/Orthogroups_SpeciesOverlaps_Normalized",
+    file_path=temp_overlap_path,
+    save_path=f"{OUTPUT_FIGURES}/Orthogroups_SpeciesOverlaps_Normalized",
     cmap='coolwarm',
     normalize=True,
     figsize=(12, 10),
     publication_ready=True
 )
+
+os.unlink(temp_overlap_path)
 ```
 
 ## 6. Gene and Orthogroup Ratio Analysis
@@ -2431,7 +3173,7 @@ def create_gene_orthogroup_ratio_plot(
                     label=column
                 )
             ax.set_xticks(range(len(data_transposed.index)))
-            ax.set_xticklabels(data_transposed.index)
+            ax.set_xticklabels(data_transposed.index.str.replace('_', ' '))
         
         # Set title
         if title is None:
@@ -2611,7 +3353,7 @@ def create_comparative_ratio_plot(
         ax1.set_xlabel('Species', fontsize=18)
         ax1.set_ylabel(top_stats.columns[0], fontsize=18)
         ax1.set_xticks(range(len(data.index)))
-        ax1.set_xticklabels(data.index, rotation=45, ha='right')
+        ax1.set_xticklabels(data.index.str.replace('_', ' '), rotation=45, ha='right')
         # Apply consistent tick styling
         ax1.tick_params(
             axis='x', 
@@ -2636,7 +3378,7 @@ def create_comparative_ratio_plot(
         ax2.set_ylabel('Gene/Orthogroup Ratio', fontsize=18)
         ax2.set_title('Gene to Orthogroup Ratio', fontsize=20, fontweight='bold')
         ax2.set_xticks(range(len(ratio)))
-        ax2.set_xticklabels(data.index, rotation=45, ha='right')
+        ax2.set_xticklabels(data.index.str.replace('_', ' '), rotation=45, ha='right')
         # Apply consistent tick styling
         ax2.tick_params(
             axis='x', 
@@ -2665,7 +3407,7 @@ def create_comparative_ratio_plot(
             ax2.set_ylabel(stat_col, fontsize=18)
             ax2.set_title(f'{stat_col} by Species', fontsize=20, fontweight='bold')
             ax2.set_xticks(range(len(data.index)))
-            ax2.set_xticklabels(data.index, rotation=45, ha='right')
+            ax2.set_xticklabels(data.index.str.replace('_', ' '), rotation=45, ha='right')
             # Apply consistent tick styling
             ax2.tick_params(
                 axis='x', 
@@ -2689,18 +3431,18 @@ def create_comparative_ratio_plot(
 ### 6.2 Data Overview
 
 ```{python}
-!head -n 15 ./Notebooks/Tables/orthologs-ratio.tsv
+!head -n 15 {OUTPUT_TABLES}/orthologs-ratio.tsv
 ```
 
 ### 6.3 Stacked Bar Plot Analysis
 
 ```{python}
 # Create publication-ready stacked bar plot
-file_path = './Notebooks/Tables/orthologs-ratio.tsv'
+file_path = f'{OUTPUT_TABLES}/orthologs-ratio.tsv'
 
 ratio_data = create_gene_orthogroup_ratio_plot(
     file_path=file_path,
-    save_path="./Notebooks/Figures/orthologs-ratio",
+    save_path=f"{OUTPUT_FIGURES}/orthologs-ratio",
     plot_type='stacked_bar',
     figsize=(16, 10),
     title='Gene and Orthogroup Counts per Species',
@@ -2719,7 +3461,7 @@ print(stats_summary)
 # Create grouped bar plot for better comparison
 create_gene_orthogroup_ratio_plot(
     file_path=file_path,
-    save_path="./Notebooks/Figures/orthologs-ratio-grouped",
+    save_path=f"{OUTPUT_FIGURES}/orthologs-ratio-grouped",
     plot_type='grouped_bar',
     figsize=(16, 10),
     title='Gene and Orthogroup Counts per Species (Grouped)',
@@ -2733,7 +3475,7 @@ create_gene_orthogroup_ratio_plot(
 # Create comparative analysis plots
 create_comparative_ratio_plot(
     data=ratio_data,
-    save_path="./Notebooks/Figures/orthologs-ratio",
+    save_path=f"{OUTPUT_FIGURES}/orthologs-ratio",
     figsize=(16, 8),
     publication_ready=True
 )
@@ -2819,12 +3561,12 @@ def plot_duplications_box_and_violin(tsv_file_path, save_path=None):
 
 #### Histogram Analysis
 ```{python}
-plot_duplications_histogram('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path="./Notebooks/Figures/duplications_histogram")
+plot_duplications_histogram(f'{ORTHOFINDER_RESULTS}/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path=f"{OUTPUT_FIGURES}/duplications_histogram")
 ```
 
 #### Box and Violin Plot Analysis
 ```{python}
-plot_duplications_box_and_violin('./Outputs/OrthoFinder/Results_Apr25/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path="./Notebooks/Figures/duplications_box_violin")
+plot_duplications_box_and_violin(f'{ORTHOFINDER_RESULTS}/Comparative_Genomics_Statistics/Duplications_per_Orthogroup.tsv', save_path=f"{OUTPUT_FIGURES}/duplications_box_violin")
 ```
 
 ## 8. UpSet Plot Analysis
@@ -2937,9 +3679,10 @@ def create_publication_upset_plot(
                 tick_labels = [label.get_text() for label in ax.get_yticklabels()]
                 # If tick labels contain species names (non-empty and contain underscores typical of species names)
                 if any('_' in label or len(label) > 3 for label in tick_labels if label):
-                    # Apply italic font style to species names
+                    # Apply italic font style to species names and replace underscores with spaces
                     for label in ax.get_yticklabels():
                         if label.get_text():  # Only modify non-empty labels
+                            label.set_text(label.get_text().replace('_', ' '))
                             label.set_fontstyle('italic')
                             label.set_fontsize(20)
         
@@ -3082,11 +3825,11 @@ def create_upset_summary_plot(
 
 ```{python}
 # Create comprehensive UpSet plot with all intersections
-upset_file_path = './Notebooks/Tables/one-hot-orthogroups-geen-count.tsv'
+upset_file_path = f'{OUTPUT_TABLES}/one-hot-orthogroups-gene-count.tsv'
 
 combination_counts, original_data = create_publication_upset_plot(
     file_path=upset_file_path,
-    save_path="./Notebooks/Figures/upset_plot",
+    save_path=f"{OUTPUT_FIGURES}/upset_plot",
     min_subset_size=None,
     # figsize=(16, 12),
     figsize=(20, 12),
@@ -3111,7 +3854,7 @@ print(f"Median intersection size: {stats['median_intersection_size']:.1f}")
 # Create filtered UpSet plot (minimum subset size of 50)
 create_publication_upset_plot(
     file_path=upset_file_path,
-    save_path="./Notebooks/Figures/upset_plot_filtered",
+    save_path=f"{OUTPUT_FIGURES}/upset_plot_filtered",
     min_subset_size=100,
     # figsize=(16, 12),
     figsize=(42, 10),
@@ -3126,7 +3869,7 @@ create_publication_upset_plot(
 # Create summary plots for UpSet analysis
 create_upset_summary_plot(
     stats=stats,
-    save_path="./Notebooks/Figures/upset_plot",
+    save_path=f"{OUTPUT_FIGURES}/upset_plot",
     figsize=(16, 8),
     publication_ready=True
 )
@@ -3142,6 +3885,258 @@ for species, count in stats['species_totals'].items():
     print(f"  {species}: {count} orthogroups ({coverage:.1f}%)")
 ```
 
+## 9. CAFE Results Visualization
+
+This section integrates CAFE5 gene family evolution results with OrthoFinder visualizations, providing insights into which gene families are under significant evolutionary pressure.
+
+### 9.1 Load CAFE Results
+
+```{python}
+import pandas as pd
+import numpy as np
+
+# Load CAFE species summary
+cafe_species_summary = pd.read_csv(
+    f'{OUTPUT_TABLES}/cafe_species_summary.tsv',
+    sep='\t'
+)
+
+# Load CAFE family-level p-values
+# Note: First column header starts with '#' so we read it and rename
+cafe_family_results = pd.read_csv(
+    get_path('cafe.single_lambda.family_results'),
+    sep='\t'
+)
+# Rename columns (first column includes '#' prefix in header)
+cafe_family_results.columns = ['FamilyID', 'pvalue', 'Significant']
+
+# Load CAFE per-family per-species changes
+cafe_changes = pd.read_csv(
+    get_path('cafe.single_lambda.change_tab'),
+    sep='\t'
+)
+
+print("=== CAFE Results Loaded ===")
+print(f"Species in summary: {len(cafe_species_summary)}")
+print(f"Families analyzed: {len(cafe_family_results)}")
+print(f"Significant families (p < 0.05): {sum(cafe_family_results['pvalue'] < 0.05)}")
+```
+
+### 9.2 Species-Level Expansion/Contraction Bar Plot
+
+```{python}
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Prepare data for plotting - filter to actual species (remove internal nodes)
+species_data = cafe_species_summary[
+    ~cafe_species_summary['Species'].str.startswith('<')
+].copy()
+
+# Sort by Net_Change
+species_data = species_data.sort_values('Net_Change', ascending=True)
+
+# Create figure
+fig, ax = plt.subplots(figsize=(14, 10))
+
+# Create stacked bar plot
+x = np.arange(len(species_data))
+width = 0.7
+
+# Plot expansions (positive) and contractions (negative)
+bars_exp = ax.barh(x, species_data['Expansions'], width,
+                   label='Expansions', color='#2E8B57', alpha=0.8)
+bars_con = ax.barh(x, -species_data['Contractions'], width,
+                   label='Contractions', color='#DC143C', alpha=0.8)
+
+# Clean species names (remove node IDs) and format for display
+clean_names = species_data['Species'].str.replace(r'<\d+>', '', regex=True).str.replace('_', ' ')
+ax.set_yticks(x)
+ax.set_yticklabels(clean_names, fontsize=14, fontstyle='italic')
+
+# Highlight focal species
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+focal_idx = clean_names[clean_names == focal_display].index
+if len(focal_idx) > 0:
+    focal_pos = list(species_data.index).index(focal_idx[0])
+    ax.get_yticklabels()[focal_pos].set_weight('bold')
+    ax.get_yticklabels()[focal_pos].set_color('#DC143C')
+
+ax.set_xlabel('Number of Gene Families', fontsize=16)
+ax.set_ylabel('Species', fontsize=16)
+ax.set_title('CAFE5 Gene Family Evolution Analysis\nExpansions vs Contractions per Species',
+             fontsize=18, fontweight='bold')
+ax.legend(loc='lower right', fontsize=14)
+ax.axvline(x=0, color='black', linewidth=1.5)
+
+# Add net change annotations
+for i, (idx, row) in enumerate(species_data.iterrows()):
+    net = row['Net_Change']
+    color = '#2E8B57' if net > 0 else '#DC143C'
+    ax.annotate(f'Net: {net:+,}', xy=(max(row['Expansions'], 0) + 500, i),
+                fontsize=10, color=color, va='center')
+
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_species_expansion_contraction.png', dpi=300, bbox_inches='tight')
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_species_expansion_contraction.pdf', bbox_inches='tight')
+plt.show()
+
+if len(focal_idx) > 0:
+    print(f"\n{focal}: {species_data.loc[focal_idx[0], 'Net_Change']:+,} genes (net)")
+```
+
+### 9.3 CAFE Significant Families Distribution
+
+```{python}
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Calculate p-value distribution
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# Left plot: P-value histogram
+ax1 = axes[0]
+ax1.hist(cafe_family_results['pvalue'], bins=50, color='#4A90A4', alpha=0.8, edgecolor='black')
+ax1.axvline(x=0.05, color='red', linestyle='--', linewidth=2, label='p = 0.05 threshold')
+ax1.set_xlabel('P-value', fontsize=14)
+ax1.set_ylabel('Number of Families', fontsize=14)
+ax1.set_title('CAFE5 P-value Distribution', fontsize=16, fontweight='bold')
+ax1.legend(fontsize=12)
+
+# Annotate significant count
+n_sig = sum(cafe_family_results['pvalue'] < 0.05)
+ax1.annotate(f'Significant: {n_sig:,}\n({n_sig/len(cafe_family_results)*100:.1f}%)',
+             xy=(0.02, ax1.get_ylim()[1]*0.8), fontsize=12, color='red', fontweight='bold')
+
+# Right plot: Pie chart of significant vs non-significant
+ax2 = axes[1]
+n_nonsig = len(cafe_family_results) - n_sig
+sizes = [n_sig, n_nonsig]
+labels = [f'Significant\n(p < 0.05)\n{n_sig:,}', f'Non-significant\n{n_nonsig:,}']
+colors = ['#DC143C', '#808080']
+ax2.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%',
+        startangle=90, textprops={'fontsize': 12})
+ax2.set_title('CAFE5 Significance Classification', fontsize=16, fontweight='bold')
+
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_pvalue_distribution.png', dpi=300, bbox_inches='tight')
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_pvalue_distribution.pdf', bbox_inches='tight')
+plt.show()
+```
+
+### 9.4 Focal Species CAFE Evolution Summary
+
+```{python}
+import matplotlib.pyplot as plt
+
+# Get focal species column from change data
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+focal_change_col = f"{get_focal_abbreviation()}_Change"
+focal_col = [c for c in cafe_changes.columns if focal in c][0]
+
+# Merge with p-values
+cafe_asp = cafe_family_results.copy()
+cafe_asp[focal_change_col] = cafe_changes[focal_col].values
+
+# Categorize families
+cafe_asp['Category'] = 'No significant change'
+cafe_asp.loc[(cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] > 0), 'Category'] = 'Significant Expansion'
+cafe_asp.loc[(cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] < 0), 'Category'] = 'Significant Contraction'
+cafe_asp.loc[(cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] == 0), 'Category'] = f'Significant (No change in {focal_display})'
+
+# Count categories
+category_counts = cafe_asp['Category'].value_counts()
+
+# Create visualization
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# Left: Category bar plot
+ax1 = axes[0]
+colors = {'Significant Expansion': '#2E8B57', 'Significant Contraction': '#DC143C',
+          'No significant change': '#808080', f'Significant (No change in {focal_display})': '#FFD700'}
+bars = ax1.barh(category_counts.index, category_counts.values,
+                color=[colors.get(c, '#808080') for c in category_counts.index])
+ax1.set_xlabel('Number of Families', fontsize=14)
+for i, (cat, count) in enumerate(zip(category_counts.index, category_counts.values)):
+    ax1.annotate(f'{count:,}', xy=(count + 100, i), va='center', fontsize=12)
+
+# Right: Change distribution for significant families
+ax2 = axes[1]
+sig_changes = cafe_asp[cafe_asp['pvalue'] < 0.05][focal_change_col]
+ax2.hist(sig_changes, bins=50, color='#4A90A4', alpha=0.8, edgecolor='black')
+ax2.axvline(x=0, color='red', linestyle='--', linewidth=2)
+ax2.set_xlabel(f'Gene Count Change in {focal_display}', fontsize=14)
+ax2.set_ylabel('Number of Families', fontsize=14)
+ax2.set_title('Distribution of Changes in Significant Families', fontsize=16, fontweight='bold')
+
+# Annotate statistics
+median_change = sig_changes.median()
+ax2.annotate(f'Median: {median_change:+.0f}\nExpanded: {sum(sig_changes > 0):,}\nContracted: {sum(sig_changes < 0):,}',
+             xy=(0.95, 0.95), xycoords='axes fraction', fontsize=12,
+             ha='right', va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_focal_species_summary.png', dpi=300, bbox_inches='tight')
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_focal_species_summary.pdf', bbox_inches='tight')
+plt.show()
+
+# Print summary
+print(f"\n=== {focal} CAFE Summary ===")
+print(f"Total families with significant expansion: {sum((cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] > 0)):,}")
+print(f"Total families with significant contraction: {sum((cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] < 0)):,}")
+print(f"Median change in significant families: {median_change:+.1f} genes")
+```
+
+### 9.5 Top Expanded/Contracted Families Visualization
+
+```{python}
+import matplotlib.pyplot as plt
+
+# Prepare focal species display label
+focal = get_focal_species()
+focal_display = focal.replace('_', ' ')
+
+# Get top expanded and contracted families
+sig_families = cafe_asp[cafe_asp['pvalue'] < 0.05].copy()
+
+top_expanded = sig_families.nlargest(15, focal_change_col)
+top_contracted = sig_families.nsmallest(15, focal_change_col)
+
+# Create figure
+fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+
+# Left: Top expanded
+ax1 = axes[0]
+ax1.barh(range(len(top_expanded)), top_expanded[focal_change_col].values, color='#2E8B57', alpha=0.8)
+ax1.set_yticks(range(len(top_expanded)))
+ax1.set_yticklabels(top_expanded['FamilyID'].values, fontsize=11)
+ax1.set_xlabel('Gene Count Change', fontsize=14)
+ax1.set_title(f'Top 15 CAFE-Expanded Families\nin {focal_display}', fontsize=14, fontweight='bold')
+ax1.invert_yaxis()
+
+# Right: Top contracted
+ax2 = axes[1]
+ax2.barh(range(len(top_contracted)), top_contracted[focal_change_col].values, color='#DC143C', alpha=0.8)
+ax2.set_yticks(range(len(top_contracted)))
+ax2.set_yticklabels(top_contracted['FamilyID'].values, fontsize=11)
+ax2.set_xlabel('Gene Count Change', fontsize=14)
+ax2.set_title(f'Top 15 CAFE-Contracted Families\nin {focal_display}', fontsize=14, fontweight='bold')
+ax2.invert_yaxis()
+
+plt.tight_layout()
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_top_families.png', dpi=300, bbox_inches='tight')
+plt.savefig(f'{OUTPUT_FIGURES}/cafe_top_families.pdf', bbox_inches='tight')
+plt.show()
+
+# Print details
+print("\n=== Top Expanded Families ===")
+print(top_expanded[['FamilyID', 'pvalue', focal_change_col]].to_string(index=False))
+print("\n=== Top Contracted Families ===")
+print(top_contracted[['FamilyID', 'pvalue', focal_change_col]].to_string(index=False))
+```
+
 ## Summary and Insights
 
 ### Visualization Suite Overview
@@ -3149,21 +4144,23 @@ for species, count in stats['species_totals'].items():
 This comprehensive visualization analysis provides:
 
 1. **Phylogenetic Analysis**: Species trees with branch lengths and gene duplication events
-2. **Individual Analysis**: Detailed orthogroup-specific visualizations  
+2. **Individual Analysis**: Detailed orthogroup-specific visualizations
 3. **Comparative Analysis**: Heatmaps highlighting species-specific patterns
 4. **Statistical Analysis**: Distribution plots for duplication events
 5. **Set Analysis**: UpSet plots showing orthogroup intersections across species
+6. **CAFE Evolution**: Gene family expansion/contraction patterns across species
 
 ### Key Findings Visualized
 
 - **Species Relationships**: Phylogenetic trees reveal evolutionary distances and gene duplication patterns
-- **Aspiorhynchus_laticeps Patterns**: Species shows unique gene expansion and contraction patterns
+- **Focal Species Patterns**: CAFE5 analysis shows net contraction (-1,058 genes) with 2,369 expanded vs 4,179 contracted families
 - **Orthogroup Distribution**: Variance-based filtering reveals most variable gene families
 - **Species Overlaps**: Heatmaps show which species share the most orthogroups
 - **Set Intersections**: UpSet plots reveal complex patterns of gene presence/absence
+- **Evolutionary Pressure**: ~1,200 families show significant evolutionary changes (p < 0.05)
 
 `★ Insight ─────────────────────────────────────`
-This ultimate visualization suite demonstrates the power of multi-modal visualization in comparative genomics. By combining phylogenetic trees, heatmaps, statistical plots, and set visualizations, we can identify species-specific gene expansions, evolutionary relationships, and functional patterns that would be invisible in any single visualization type. The progression from individual orthogroup analysis to genome-wide patterns provides multiple scales of biological insight.
+This ultimate visualization suite demonstrates the power of multi-modal visualization in comparative genomics. By combining phylogenetic trees, heatmaps, statistical plots, set visualizations, and CAFE evolution analysis, we can identify species-specific gene expansions, evolutionary relationships, and functional patterns that would be invisible in any single visualization type. The integration of CAFE5 results provides statistical rigor to identify families under genuine evolutionary pressure. The progression from individual orthogroup analysis to genome-wide patterns provides multiple scales of biological insight.
 `─────────────────────────────────────────────────`
 
 The comprehensive visualization framework established here can be adapted for any comparative genomics dataset, providing a complete analytical pipeline from raw OrthoFinder outputs to publication-ready figures.

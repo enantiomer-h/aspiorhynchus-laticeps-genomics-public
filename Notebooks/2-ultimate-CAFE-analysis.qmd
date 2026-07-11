@@ -1,0 +1,1491 @@
+---
+title: CAFE5 Gene Family Evolution Analysis
+subtitle: Analyzing gene family expansion and contraction in cypriniform fishes
+jupyter:
+  kernelspec:
+    display_name: Python (Biopython)
+    language: python
+    name: env_biopython
+---
+
+## Project Overview
+
+This notebook performs **gene family evolution analysis** using CAFE5 (Computational Analysis of gene Family Evolution) to identify gene families that have undergone significant expansion or contraction across the phylogeny of cypriniform fishes.
+
+### What is CAFE?
+
+CAFE uses a **stochastic birth-death model** to analyze changes in gene family size across a phylogenetic tree. Key concepts:
+
+- **Lambda (λ)**: The birth-death rate parameter - the probability of gene gain or loss per gene per unit time
+- **Significant families**: Gene families evolving faster than expected under the neutral model (p < 0.05)
+- **Expansion**: Gene family size increase on a branch
+- **Contraction**: Gene family size decrease on a branch
+
+### Analysis Focus
+
+- **Species of interest**: *Diptychus maculatus*
+- **Comparative context**: 12 cypriniform fish species
+- **Goal**: Identify gene families with unusual evolutionary dynamics
+
+### Prerequisites
+
+This notebook requires outputs from:
+
+1. **OrthoFinder** (Notebook 2): Gene count matrix and orthogroup assignments
+2. **Phylogenetic Tree Estimation** (Notebook 2-PhylogeneticTreeEstimation): Ultrametric species tree
+
+### Citation
+
+```
+Mendes FK, Vanderpool D, Fulton B, Hahn MW. (2020).
+CAFE 5 models variation in evolutionary rates among gene families.
+Bioinformatics 36(22-23):5516-5518.
+doi: 10.1093/bioinformatics/btaa1022
+```
+
+## 1. Environment Setup
+
+### 1.1 Create CAFE5 Conda Environment
+
+First, we need to install CAFE5 in a new conda environment:
+
+```{python}
+import subprocess
+import os
+
+# Check if cafe5_env already exists
+result = subprocess.run(["conda", "env", "list"], capture_output=True, text=True)
+if "cafe5_env" in result.stdout:
+    print("cafe5_env environment already exists!")
+else:
+    print("Creating cafe5_env environment...")
+    print("This may take a few minutes...")
+    # Create environment
+    !mamba create -n cafe5_env -y -c bioconda -c conda-forge cafe
+```
+
+```{python}
+# Verify CAFE5 installation
+print("Verifying CAFE5 installation...")
+result = subprocess.run(
+    ["conda", "run", "-n", "cafe5_env", "cafe5", "-h"],
+    capture_output=True,
+    text=True
+)
+
+if result.returncode == 0:
+    print("CAFE5 installed successfully!")
+    print()
+    print("CAFE5 Help (first 50 lines):")
+    print("-" * 60)
+    for line in result.stdout.split('\n')[:50]:
+        print(line)
+else:
+    print("Error verifying CAFE5:")
+    print(result.stderr)
+```
+
+### 1.2 Import Python Libraries
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from Bio import Phylo
+import json
+import os
+import sys
+from typing import Tuple, List, Dict, Optional
+
+# Load centralized path configuration
+sys.path.insert(0, './Notebooks/config')
+from load_config import load_paths, get_path, get_version, get_focal_species, get_focal_display_name, ensure_output_dirs
+
+OUTPUT_FIGURES = get_path('outputs.figures')
+OUTPUT_TABLES = get_path('outputs.tables')
+FOCAL_SPECIES = get_focal_species()
+
+# Load and display configuration
+paths = load_paths(config_path="/home/jovyan/Notebooks/config/paths-set2.yaml")
+print(f"Configuration loaded: OrthoFinder Results_{get_version()}")
+print(f"OrthoFinder results: {get_path('orthofinder.results_dir')}")
+print(f"Focal species: {get_focal_species()}")
+
+# Set plotting style
+plt.style.use('default')
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.size': 12,
+    'axes.linewidth': 1.2,
+    'figure.facecolor': 'white',
+    'axes.facecolor': 'white'
+})
+
+# Create output directories
+os.makedirs(get_path('cafe.results_dir'), exist_ok=True)
+os.makedirs(get_path('outputs.figures'), exist_ok=True)
+os.makedirs(get_path('outputs.tables'), exist_ok=True)
+
+print("Environment setup complete!")
+```
+
+## 2. Preparing Input Files
+
+CAFE5 requires two input files:
+
+1. **Gene count matrix**: Tab-separated file with gene counts per family per species
+2. **Ultrametric tree**: Newick format phylogenetic tree with time-scaled branch lengths
+
+### 2.1 Load and Examine OrthoFinder Gene Counts
+
+```{python}
+# Load OrthoFinder gene count matrix
+orthogroups_path = get_path('orthofinder.orthogroups_count')
+print(f"Loading gene counts from: {orthogroups_path}")
+
+gene_counts_original = pd.read_csv(orthogroups_path, sep="\t")
+
+print("=" * 60)
+print("ORTHOFINDER GENE COUNT MATRIX")
+print("=" * 60)
+print(f"Total orthogroups: {len(gene_counts_original):,}")
+print(f"Columns: {gene_counts_original.columns.tolist()}")
+print()
+print("First 10 rows:")
+print(gene_counts_original.head(10))
+```
+
+```{python}
+# Summary statistics
+print("Gene count statistics per species:")
+print("=" * 60)
+
+species_cols = [c for c in gene_counts_original.columns if c not in ['Orthogroup', 'Total']]
+
+stats = gene_counts_original[species_cols].describe()
+print(stats.T[['count', 'mean', 'std', 'min', 'max']])
+```
+
+### 2.2 Format Gene Count Matrix for CAFE5
+
+CAFE5 requires a specific format:
+- First column: "Desc" (description, can be null)
+- Second column: "Family ID" (orthogroup identifier)
+- Remaining columns: Species gene counts
+
+```{python}
+def format_gene_counts_for_cafe(
+    input_df: pd.DataFrame,
+    output_path: str,
+    remove_total: bool = True
+) -> pd.DataFrame:
+    """
+    Convert OrthoFinder gene count matrix to CAFE5 format.
+
+    Parameters:
+    - input_df: OrthoFinder gene count DataFrame
+    - output_path: Path to save CAFE5-formatted file
+    - remove_total: Whether to remove the 'Total' column
+
+    Returns:
+    - Formatted DataFrame
+    """
+    df = input_df.copy()
+
+    # Remove 'Total' column if present
+    if remove_total and 'Total' in df.columns:
+        df = df.drop('Total', axis=1)
+        print("Removed 'Total' column")
+
+    # Rename 'Orthogroup' to 'Family ID'
+    if 'Orthogroup' in df.columns:
+        df = df.rename(columns={'Orthogroup': 'Family ID'})
+        print("Renamed 'Orthogroup' to 'Family ID'")
+
+    # Add 'Desc' column as first column
+    df.insert(0, 'Desc', '(null)')
+    print("Added 'Desc' column")
+
+    # Save to file
+    df.to_csv(output_path, sep="\t", index=False)
+
+    print()
+    print(f"CAFE5-formatted gene counts saved to: {output_path}")
+    print(f"Number of gene families: {len(df):,}")
+    print(f"Number of species: {len(df.columns) - 2}")
+
+    return df
+
+# Format for CAFE5
+cafe_counts = format_gene_counts_for_cafe(
+    gene_counts_original,
+    get_path('cafe.gene_counts')
+)
+
+print()
+print("First 5 rows of CAFE5 format:")
+print(cafe_counts.head())
+```
+
+### 2.3 Filter Gene Families
+
+CAFE5 can have convergence issues with very large gene families. We filter families with extreme copy numbers:
+
+```{python}
+def filter_gene_families(
+    input_path: str,
+    output_path: str,
+    max_copy_number: int = 100,
+    min_total: int = 2
+) -> Tuple[pd.DataFrame, Dict]:
+    """
+    Filter gene families for CAFE5 analysis.
+
+    Removes:
+    - Families with any species having more than max_copy_number genes
+    - Families with fewer than min_total genes across all species
+
+    Parameters:
+    - input_path: Path to CAFE5-formatted gene counts
+    - output_path: Path to save filtered counts
+    - max_copy_number: Maximum allowed copy number in any species
+    - min_total: Minimum total genes across all species
+
+    Returns:
+    - Filtered DataFrame and filtering statistics
+    """
+    df = pd.read_csv(input_path, sep="\t")
+
+    # Get species columns
+    species_cols = [c for c in df.columns if c not in ['Desc', 'Family ID']]
+
+    # Calculate statistics before filtering
+    original_count = len(df)
+
+    # Filter by max copy number
+    max_values = df[species_cols].max(axis=1)
+    mask_max = max_values <= max_copy_number
+
+    # Filter by minimum total
+    total_values = df[species_cols].sum(axis=1)
+    mask_min = total_values >= min_total
+
+    # Combined filter
+    mask = mask_max & mask_min
+    df_filtered = df[mask].copy()
+
+    # Calculate filtering statistics
+    stats = {
+        'original_families': original_count,
+        'filtered_families': len(df_filtered),
+        'removed_large': (~mask_max).sum(),
+        'removed_small': (~mask_min).sum(),
+        'removed_total': original_count - len(df_filtered),
+        'max_copy_threshold': max_copy_number,
+        'min_total_threshold': min_total
+    }
+
+    # Save filtered data
+    df_filtered.to_csv(output_path, sep="\t", index=False)
+
+    # Print summary
+    print("=" * 60)
+    print("GENE FAMILY FILTERING")
+    print("=" * 60)
+    print(f"Original families:      {stats['original_families']:,}")
+    print(f"Removed (max > {max_copy_number}):   {stats['removed_large']:,}")
+    print(f"Removed (total < {min_total}):     {stats['removed_small']:,}")
+    print(f"Final families:         {stats['filtered_families']:,}")
+    print(f"Retention rate:         {100*stats['filtered_families']/stats['original_families']:.1f}%")
+    print()
+    print(f"Filtered data saved to: {output_path}")
+
+    return df_filtered, stats
+
+# Filter gene families
+cafe_counts_filtered, filter_stats = filter_gene_families(
+    get_path('cafe.gene_counts'),
+    get_path('cafe.gene_counts_filtered'),
+    max_copy_number=100,
+    min_total=2
+)
+```
+
+`★ Insight ─────────────────────────────────────`
+Filtering is important because:
+1. **Large families** can cause numerical instability in CAFE5's likelihood calculations
+2. **Single-gene families** provide no information about gene gain/loss
+3. A threshold of 100 copies is commonly used in CAFE publications
+`─────────────────────────────────────────────────`
+
+### 2.4 Verify Ultrametric Tree
+
+```{python}
+# Check that ultrametric tree exists
+tree_path = get_path('cafe.input_tree')
+
+if os.path.exists(tree_path):
+    print(f"Ultrametric tree found: {tree_path}")
+
+    # Read and display
+    tree = Phylo.read(tree_path, "newick")
+    print(f"Number of species: {len(tree.get_terminals())}")
+    print()
+    print("Species in tree:")
+    for tip in tree.get_terminals():
+        print(f"  - {tip.name}")
+
+    # Verify ultrametric property
+    distances = [tree.distance(tip) for tip in tree.get_terminals()]
+    print()
+    print(f"Root-to-tip distance range: {max(distances) - min(distances):.10f}")
+    print(f"Is ultrametric: {(max(distances) - min(distances)) < 1e-6}")
+else:
+    print(f"ERROR: Ultrametric tree not found at {tree_path}")
+    print("Please run the PhylogeneticTreeEstimation notebook first!")
+```
+
+```{python}
+# Display tree content
+with open(tree_path, 'r') as f:
+    tree_newick = f.read().strip()
+
+print("Tree Newick string:")
+print("-" * 60)
+print(tree_newick[:200] + "..." if len(tree_newick) > 200 else tree_newick)
+```
+
+### 2.5 Verify Species Name Consistency
+
+```{python}
+# Check that species names match between tree and gene count matrix
+species_in_tree = set(tip.name for tip in tree.get_terminals())
+species_cols = [c for c in cafe_counts_filtered.columns if c not in ['Desc', 'Family ID']]
+species_in_matrix = set(species_cols)
+
+print("Species name consistency check:")
+print("-" * 60)
+
+if species_in_tree == species_in_matrix:
+    print("PASS: Species names match between tree and gene count matrix")
+else:
+    print("WARNING: Species name mismatch!")
+    print(f"In tree only: {species_in_tree - species_in_matrix}")
+    print(f"In matrix only: {species_in_matrix - species_in_tree}")
+
+print()
+print(f"Species in tree ({len(species_in_tree)}): {sorted(species_in_tree)}")
+print(f"Species in matrix ({len(species_in_matrix)}): {sorted(species_in_matrix)}")
+```
+
+## 3. Running CAFE5 Analysis
+
+### 3.1 Basic CAFE5 Run (Single Lambda)
+
+This estimates a single birth-death rate (λ) across the entire tree:
+
+```{python}
+# Define paths
+input_counts = get_path('cafe.gene_counts_filtered')
+input_tree = get_path('cafe.input_tree')
+output_dir_single = get_path('cafe.single_lambda.dir')
+
+# Create output directory
+os.makedirs(output_dir_single, exist_ok=True)
+
+# Build CAFE5 command
+cafe_cmd = f"""conda run -n cafe5_env cafe5 \
+    -i {input_counts} \
+    -t {input_tree} \
+    -o {output_dir_single} \
+    -p
+"""
+
+print("Running CAFE5 with single lambda estimation...")
+print("-" * 60)
+print(f"Input gene counts: {input_counts}")
+print(f"Input tree: {input_tree}")
+print(f"Output directory: {output_dir_single}")
+print()
+print("Command:")
+print(cafe_cmd)
+```
+
+```{python}
+# Execute CAFE5
+result = subprocess.run(
+    ["conda", "run", "-n", "cafe5_env", "cafe5",
+     "-i", input_counts,
+     "-t", input_tree,
+     "-o", output_dir_single,
+     "-p"],
+    capture_output=True,
+    text=True,
+    timeout=3600  # 1 hour timeout
+)
+
+print("CAFE5 Output:")
+print("=" * 60)
+print(result.stdout)
+
+if result.stderr:
+    print()
+    print("Warnings/Errors:")
+    print("-" * 60)
+    print(result.stderr)
+
+if result.returncode == 0:
+    print()
+    print("CAFE5 completed successfully!")
+else:
+    print()
+    print(f"CAFE5 finished with return code: {result.returncode}")
+```
+
+### 3.2 CAFE5 with Error Model (Optional)
+
+CAFE5 can account for genome assembly and annotation errors:
+
+```{python}
+# Run with error model
+output_dir_error = get_path('cafe.with_error_model.dir')
+os.makedirs(output_dir_error, exist_ok=True)
+
+print("Running CAFE5 with error model estimation...")
+print("(This accounts for genome assembly/annotation errors)")
+print()
+
+result_error = subprocess.run(
+    ["conda", "run", "-n", "cafe5_env", "cafe5",
+     "-i", input_counts,
+     "-t", input_tree,
+     "-o", output_dir_error,
+     "-e",  # Estimate error model
+     "-p"],
+    capture_output=True,
+    text=True,
+    timeout=7200  # 2 hour timeout
+)
+
+print("CAFE5 (with error model) Output:")
+print("=" * 60)
+print(result_error.stdout[:2000] if len(result_error.stdout) > 2000 else result_error.stdout)
+
+if result_error.returncode == 0:
+    print()
+    print("CAFE5 with error model completed successfully!")
+```
+
+### 3.3 CAFE5 with Multiple Lambda Categories (Optional)
+
+For modeling rate heterogeneity among gene families:
+
+```{python}
+# Run with gamma-distributed rate categories
+output_dir_gamma = get_path('cafe.multi_lambda.dir')
+os.makedirs(output_dir_gamma, exist_ok=True)
+
+print("Running CAFE5 with multiple lambda categories (k=3)...")
+print("(This models rate variation among gene families)")
+print()
+
+result_gamma = subprocess.run(
+    ["conda", "run", "-n", "cafe5_env", "cafe5",
+     "-i", input_counts,
+     "-t", input_tree,
+     "-o", output_dir_gamma,
+     "-k", "3",  # 3 gamma rate categories
+     "-p"],
+    capture_output=True,
+    text=True,
+    timeout=10800  # 3 hour timeout
+)
+
+print("CAFE5 (multi-lambda) Output:")
+print("=" * 60)
+print(result_gamma.stdout[:2000] if len(result_gamma.stdout) > 2000 else result_gamma.stdout)
+
+if result_gamma.returncode == 0:
+    print()
+    print("CAFE5 with multiple lambda categories completed successfully!")
+```
+
+## 4. Parsing CAFE5 Results
+
+### 4.1 Read Summary Statistics
+
+```{python}
+def parse_cafe_summary(results_dir: str) -> Dict:
+    """
+    Parse CAFE5 summary output and extract key statistics.
+    """
+    summary_data = {}
+
+    # Check for different possible output file names
+    possible_files = [
+        "Base_results.txt",
+        "Gamma_results.txt",
+        "results.txt",
+        "summary.txt"
+    ]
+
+    for filename in possible_files:
+        filepath = os.path.join(results_dir, filename)
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                content = f.read()
+            summary_data['summary_content'] = content
+            print(f"Found results file: {filepath}")
+            print("-" * 60)
+            print(content)
+            break
+
+    # Parse lambda values from different output files
+    model_file = os.path.join(results_dir, "Base_model.txt")
+    if os.path.exists(model_file):
+        with open(model_file, 'r') as f:
+            model_content = f.read()
+        print()
+        print("Model parameters:")
+        print("-" * 60)
+        print(model_content)
+
+    return summary_data
+
+# Parse single lambda results
+print("=" * 60)
+print("CAFE5 RESULTS - SINGLE LAMBDA")
+print("=" * 60)
+summary_single = parse_cafe_summary(output_dir_single)
+```
+
+### 4.2 Parse Significant Gene Families
+
+```{python}
+def parse_significant_families(results_dir: str, pvalue_threshold: float = 0.05) -> pd.DataFrame:
+    """
+    Parse CAFE5 output to identify significantly evolving gene families.
+
+    Parameters:
+    - results_dir: Directory containing CAFE5 results
+    - pvalue_threshold: P-value threshold for significance
+
+    Returns:
+    - DataFrame with significant families and their p-values
+    """
+    # Look for family-level results file
+    possible_files = [
+        "Base_family_results.txt",
+        "Gamma_family_results.txt",
+        "family_results.txt"
+    ]
+
+    results_file = None
+    for filename in possible_files:
+        filepath = os.path.join(results_dir, filename)
+        if os.path.exists(filepath):
+            results_file = filepath
+            break
+
+    if results_file is None:
+        print(f"No family results file found in {results_dir}")
+        return None
+
+    # Read results
+    df = pd.read_csv(results_file, sep="\t")
+
+    print(f"Loaded family results from: {results_file}")
+    print(f"Total families analyzed: {len(df):,}")
+
+    # Check for p-value column
+    pvalue_cols = [c for c in df.columns if 'pvalue' in c.lower() or 'p-value' in c.lower() or 'p_value' in c.lower()]
+
+    if pvalue_cols:
+        pvalue_col = pvalue_cols[0]
+        sig_families = df[df[pvalue_col] < pvalue_threshold].copy()
+        print(f"Significantly evolving families (p < {pvalue_threshold}): {len(sig_families):,}")
+        return df, sig_families
+    else:
+        print("No p-value column found")
+        print(f"Available columns: {df.columns.tolist()}")
+        return df, None
+
+# Parse significant families
+all_families, sig_families = parse_significant_families(output_dir_single)
+
+if all_families is not None:
+    print()
+    print("First 10 families:")
+    print(all_families.head(10))
+```
+
+### 4.3 Parse Per-Branch Gene Family Changes
+
+```{python}
+def parse_branch_changes(results_dir: str) -> pd.DataFrame:
+    """
+    Parse gene family size changes at each branch/node.
+    """
+    # Look for change file
+    possible_files = [
+        "Base_change.tab",
+        "Base_clade_results.txt",
+        "Gamma_change.tab",
+        "change.tab"
+    ]
+
+    change_file = None
+    for filename in possible_files:
+        filepath = os.path.join(results_dir, filename)
+        if os.path.exists(filepath):
+            change_file = filepath
+            break
+
+    if change_file is None:
+        print(f"No change file found in {results_dir}")
+        # List available files
+        print("Available files:")
+        for f in os.listdir(results_dir):
+            print(f"  - {f}")
+        return None
+
+    # Read changes
+    df = pd.read_csv(change_file, sep="\t")
+
+    print(f"Loaded branch changes from: {change_file}")
+    print(f"Columns: {df.columns.tolist()}")
+
+    return df
+
+# Parse branch changes
+branch_changes = parse_branch_changes(output_dir_single)
+
+if branch_changes is not None:
+    print()
+    print("First 10 rows:")
+    # Strip CAFE5 node IDs (e.g., "<8>") from column names for display,
+    # because angle brackets are interpreted as HTML tags in Quarto/Jupyter output
+    import re
+    display_df = branch_changes.head(10).copy()
+    display_df.columns = [re.sub(r'<\d+>', '', c) for c in display_df.columns]
+    print(display_df)
+```
+
+### 4.4 Calculate Summary Statistics per Species
+
+```{python}
+def calculate_species_summary(branch_changes: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate total expansions and contractions per species/branch.
+    """
+    if branch_changes is None:
+        return None
+
+    # Identify species columns (exclude family ID column)
+    id_cols = ['FamilyID', 'Family ID', 'ID', 'family_id']
+    species_cols = [c for c in branch_changes.columns if c not in id_cols]
+
+    # Calculate statistics per species
+    summary = []
+    for species in species_cols:
+        if species in branch_changes.columns:
+            values = branch_changes[species]
+            expansions = (values > 0).sum()
+            contractions = (values < 0).sum()
+            unchanged = (values == 0).sum()
+            net_change = values.sum()
+            total_gained = values[values > 0].sum()
+            total_lost = values[values < 0].sum()
+
+            summary.append({
+                'Species': species,
+                'Expansions': expansions,
+                'Contractions': contractions,
+                'Unchanged': unchanged,
+                'Net_Change': net_change,
+                'Genes_Gained': total_gained,
+                'Genes_Lost': abs(total_lost)
+            })
+
+    df_summary = pd.DataFrame(summary)
+    df_summary = df_summary.sort_values('Net_Change', ascending=False)
+
+    return df_summary
+
+# Calculate species summary
+if branch_changes is not None:
+    species_summary = calculate_species_summary(branch_changes)
+    print("=" * 60)
+    print("GENE FAMILY CHANGES PER SPECIES")
+    print("=" * 60)
+    print(species_summary.to_string(index=False))
+
+    # Save summary
+    species_summary.to_csv(f"{OUTPUT_TABLES}/cafe_species_summary.tsv", sep="\t", index=False)
+    print()
+    print("Summary saved to: ./Notebooks/Tables/cafe_species_summary.tsv")
+```
+
+## 5. Visualization of CAFE5 Results
+
+### 5.1 Net Gene Family Changes Bar Plot
+
+```{python}
+def plot_species_changes_barplot(
+    species_summary: pd.DataFrame,
+    output_path: str,
+    figsize: Tuple[int, int] = (14, 8),
+    highlight_species: str = None
+):
+    """
+    Create bar plot showing net gene family changes per species.
+    """
+    if highlight_species is None:
+        highlight_species = get_focal_species()
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Sort by net change
+    df = species_summary.sort_values('Net_Change')
+
+    # Create colors (highlight species of interest)
+    # Use partial matching since CAFE5 columns include node IDs, e.g., "Diptychus_maculatus<5>"
+    colors = []
+    for species in df['Species']:
+        if highlight_species in species:
+            colors.append('#E74C3C')  # Red for highlight species
+        elif df.loc[df['Species'] == species, 'Net_Change'].values[0] > 0:
+            colors.append('#27AE60')  # Green for expansion
+        else:
+            colors.append('#3498DB')  # Blue for contraction
+
+    # Create bar plot
+    bars = ax.barh(range(len(df)), df['Net_Change'], color=colors)
+
+    # Customize
+    ax.set_yticks(range(len(df)))
+    ax.set_yticklabels(df['Species'].str.replace('_', ' '), fontsize=11, fontstyle='italic')
+    ax.set_xlabel('Net Gene Family Change', fontsize=14)
+    ax.set_title('Net Gene Family Expansion/Contraction by Species\n(CAFE5 Analysis)',
+                fontsize=16, fontweight='bold', pad=20)
+    ax.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+
+    # Add value labels
+    for i, (idx, row) in enumerate(df.iterrows()):
+        value = row['Net_Change']
+        ax.text(value + (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01 if value >= 0 else value - (ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01,
+               i, f'{int(value):+d}',
+               va='center', ha='left' if value >= 0 else 'right',
+               fontsize=10, fontweight='bold')
+
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#27AE60', label='Net Expansion'),
+        Patch(facecolor='#3498DB', label='Net Contraction'),
+        Patch(facecolor='#E74C3C', label=f'{highlight_species} (Focus Species)')
+    ]
+    ax.legend(handles=legend_elements, loc='lower right', fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+# Create bar plot
+if species_summary is not None:
+    plot_species_changes_barplot(
+        species_summary,
+        f"{OUTPUT_FIGURES}/cafe_species_changes_barplot"
+    )
+```
+
+### 5.2 Expansions vs Contractions Grouped Bar Plot
+
+```{python}
+def plot_expansions_contractions(
+    species_summary: pd.DataFrame,
+    output_path: str,
+    figsize: Tuple[int, int] = (16, 8)
+):
+    """
+    Create grouped bar plot showing expansions and contractions per species.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Sort by total activity (expansions + contractions)
+    df = species_summary.copy()
+    df['Total_Activity'] = df['Expansions'] + df['Contractions']
+    df = df.sort_values('Total_Activity', ascending=False)
+
+    x = np.arange(len(df))
+    width = 0.35
+
+    bars1 = ax.bar(x - width/2, df['Expansions'], width, label='Expansions',
+                   color='#27AE60', edgecolor='white', linewidth=0.7)
+    bars2 = ax.bar(x + width/2, df['Contractions'], width, label='Contractions',
+                   color='#E74C3C', edgecolor='white', linewidth=0.7)
+
+    ax.set_xlabel('Species', fontsize=14)
+    ax.set_ylabel('Number of Gene Families', fontsize=14)
+    ax.set_title('Gene Family Expansions and Contractions per Species\n(CAFE5 Analysis)',
+                fontsize=16, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(df['Species'].str.replace('_', ' '), rotation=45, ha='right', fontsize=10, fontstyle='italic')
+    ax.legend(fontsize=12)
+
+    # Add value labels
+    for bar in bars1:
+        height = bar.get_height()
+        ax.annotate(f'{int(height)}',
+                   xy=(bar.get_x() + bar.get_width()/2, height),
+                   xytext=(0, 3), textcoords="offset points",
+                   ha='center', va='bottom', fontsize=8)
+
+    for bar in bars2:
+        height = bar.get_height()
+        ax.annotate(f'{int(height)}',
+                   xy=(bar.get_x() + bar.get_width()/2, height),
+                   xytext=(0, 3), textcoords="offset points",
+                   ha='center', va='bottom', fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+# Create grouped bar plot
+if species_summary is not None:
+    plot_expansions_contractions(
+        species_summary,
+        f"{OUTPUT_FIGURES}/cafe_expansions_contractions"
+    )
+```
+
+### 5.3 P-value Distribution of Gene Families
+
+```{python}
+def plot_pvalue_distribution(
+    all_families: pd.DataFrame,
+    sig_families: pd.DataFrame,
+    output_path: str,
+    figsize: Tuple[int, int] = (14, 5)
+):
+    """
+    Plot p-value distribution and top significant families.
+    """
+    if all_families is None:
+        print("No family data available for plotting")
+        return
+
+    # Find p-value column
+    pvalue_cols = [c for c in all_families.columns if 'pvalue' in c.lower() or 'p-value' in c.lower()]
+    if not pvalue_cols:
+        print("No p-value column found")
+        return
+
+    pvalue_col = pvalue_cols[0]
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    # Panel A: P-value histogram
+    ax1 = axes[0]
+    ax1.hist(all_families[pvalue_col].dropna(), bins=50, color='steelblue',
+             edgecolor='white', linewidth=0.5, alpha=0.8)
+    ax1.axvline(x=0.05, color='red', linestyle='--', linewidth=2, label='p = 0.05')
+    ax1.set_xlabel('P-value', fontsize=12)
+    ax1.set_ylabel('Number of Gene Families', fontsize=12)
+    ax1.set_title('P-value Distribution of Gene Families', fontsize=14, fontweight='bold')
+    ax1.legend(fontsize=10)
+
+    # Panel B: Top significant families
+    ax2 = axes[1]
+    if sig_families is not None and len(sig_families) > 0:
+        top_n = min(20, len(sig_families))
+        top_sig = sig_families.nsmallest(top_n, pvalue_col)
+
+        # Find family ID column
+        id_cols = [c for c in top_sig.columns if 'family' in c.lower() or 'id' in c.lower()]
+        id_col = id_cols[0] if id_cols else top_sig.columns[0]
+
+        y_pos = range(len(top_sig))
+        # Clamp p-values: replace 0 with a small floor to avoid -log10(0) = inf
+        pvals_clamped = top_sig[pvalue_col].clip(lower=1e-300)
+        ax2.barh(y_pos, -np.log10(pvals_clamped), color='coral', edgecolor='white')
+        ax2.set_yticks(y_pos)
+        ax2.set_yticklabels(top_sig[id_col], fontsize=9)
+        ax2.set_xlabel('-log10(p-value)', fontsize=12)
+        ax2.set_title(f'Top {top_n} Most Significant Families', fontsize=14, fontweight='bold')
+        ax2.axvline(x=-np.log10(0.05), color='red', linestyle='--', linewidth=2, label='p = 0.05')
+    else:
+        ax2.text(0.5, 0.5, 'No significant families found',
+                ha='center', va='center', transform=ax2.transAxes, fontsize=14)
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+# Create p-value distribution plot
+if all_families is not None:
+    plot_pvalue_distribution(
+        all_families,
+        sig_families,
+        f"{OUTPUT_FIGURES}/cafe_pvalue_distribution"
+    )
+```
+
+### 5.4 Phylogenetic Tree with Gene Family Changes (R ggtree)
+
+```{r}
+# Load centralized R configuration
+source("./Notebooks/config/load_config.R")
+load_paths(config_path = "/home/jovyan/Notebooks/config/paths-set2.yaml", force_reload = TRUE)
+
+# Load required libraries
+library(ggtree)
+library(ape)
+library(ggplot2)
+library(dplyr)
+
+# Read the species tree
+tree <- read.tree(get_path('cafe.input_tree'))
+
+# Read species summary data
+species_data <- read.table(f"{OUTPUT_TABLES}/cafe_species_summary.tsv",
+                          header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# Match tree tips with data
+tip_data <- data.frame(
+    label = tree$tip.label,
+    stringsAsFactors = FALSE
+) %>%
+    left_join(species_data, by = c("label" = "Species"))
+
+# Replace NA with 0 for any missing species
+tip_data[is.na(tip_data)] <- 0
+
+# Create the tree plot
+p <- ggtree(tree, layout = "rectangular", size = 1.2) %<+% tip_data +
+    geom_tiplab(aes(label = label), size = 4, fontface = "italic", offset = 0.01) +
+    geom_tippoint(aes(color = Net_Change, size = abs(Net_Change)), alpha = 0.8) +
+    scale_color_gradient2(
+        low = "#3498DB",
+        mid = "white",
+        high = "#27AE60",
+        midpoint = 0,
+        name = "Net Change"
+    ) +
+    scale_size_continuous(range = c(3, 10), name = "|Net Change|") +
+    theme_tree2() +
+    theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.position = "right",
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 10)
+    ) +
+    labs(title = "Species Tree with Gene Family Changes (CAFE5)")
+
+# Save the plot
+ggsave(paste0(get_path("outputs.figures"), "/cafe_tree_changes_ggtree.png"), p,
+       width = 14, height = 10, dpi = 300)
+ggsave(paste0(get_path("outputs.figures"), "/cafe_tree_changes_ggtree.pdf"), p,
+       width = 14, height = 10)
+
+print(p)
+cat("\nTree figure saved to: ./Notebooks/Figures/cafe_tree_changes_ggtree.png/pdf\n")
+```
+
+## 6. Diptychus maculatus-Specific Analysis
+
+### 6.1 Extract Species-Specific Changes
+
+```{python}
+def analyze_species_of_interest(
+    branch_changes: pd.DataFrame,
+    species_name: str = None,
+    top_n: int = 30
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Detailed analysis of gene family changes for a specific species.
+
+    Returns:
+    - Top expanded families
+    - Top contracted families
+    """
+    if branch_changes is None:
+        print("No branch change data available")
+        return None, None
+
+    if species_name is None:
+        species_name = get_focal_species()
+
+    # Find the column containing the species name
+    # CAFE5 output includes node IDs, e.g., "Diptychus_maculatus<5>"
+    matching_cols = [c for c in branch_changes.columns if species_name in c]
+    if not matching_cols:
+        print(f"Species {species_name} not found in change data")
+        print(f"Available columns: {list(branch_changes.columns)}")
+        return None, None
+
+    species_col = matching_cols[0]
+    print(f"Found species column: {species_col}")
+
+    # Get family ID column
+    id_cols = [c for c in branch_changes.columns if 'family' in c.lower() or 'id' in c.lower()]
+    id_col = id_cols[0] if id_cols else branch_changes.columns[0]
+
+    # Extract changes for this species
+    species_data = branch_changes[[id_col, species_col]].copy()
+    species_data.columns = ['Family_ID', 'Change']
+
+    # Separate expansions and contractions
+    expansions = species_data[species_data['Change'] > 0].sort_values('Change', ascending=False)
+    contractions = species_data[species_data['Change'] < 0].sort_values('Change')
+
+    # Get summary
+    print("=" * 60)
+    print(f"GENE FAMILY ANALYSIS: {species_name}")
+    print("=" * 60)
+    print()
+    print(f"Total families analyzed: {len(species_data):,}")
+    print(f"Families with expansion: {len(expansions):,}")
+    print(f"Families with contraction: {len(contractions):,}")
+    print(f"Families unchanged: {(species_data['Change'] == 0).sum():,}")
+    print()
+    print(f"Total genes gained: {expansions['Change'].sum():+d}")
+    print(f"Total genes lost: {contractions['Change'].sum():d}")
+    print(f"Net change: {species_data['Change'].sum():+d}")
+
+    print()
+    print(f"Top {min(top_n, len(expansions))} Expanded Gene Families:")
+    print("-" * 40)
+    print(expansions.head(top_n).to_string(index=False))
+
+    print()
+    print(f"Top {min(top_n, len(contractions))} Contracted Gene Families:")
+    print("-" * 40)
+    print(contractions.head(top_n).to_string(index=False))
+
+    return expansions, contractions
+
+# Analyze focal species from config
+if branch_changes is not None:
+    al_expansions, al_contractions = analyze_species_of_interest(
+        branch_changes,
+        get_focal_species(),
+        top_n=30
+    )
+
+    # Save results
+    if al_expansions is not None:
+        os.makedirs(get_path('cafe.diptychus_analysis'), exist_ok=True)
+        al_expansions.to_csv(
+            get_path('cafe.expanded_families'),
+            sep="\t", index=False
+        )
+        al_contractions.to_csv(
+            get_path('cafe.contracted_families'),
+            sep="\t", index=False
+        )
+        print()
+        print(f"Results saved to: {get_path('cafe.diptychus_analysis')}")
+```
+
+### 6.2 Visualize Species-Specific Changes
+
+```{python}
+def plot_species_specific_changes(
+    expansions: pd.DataFrame,
+    contractions: pd.DataFrame,
+    species_name: str,
+    output_path: str,
+    top_n: int = 20,
+    figsize: Tuple[int, int] = (14, 10)
+):
+    """
+    Create visualization of top gene family changes for a species.
+    """
+    if expansions is None or contractions is None:
+        print("No data available for plotting")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+
+    # Top expansions
+    ax1 = axes[0]
+    top_exp = expansions.head(top_n)
+    y_pos = range(len(top_exp))
+    ax1.barh(y_pos, top_exp['Change'], color='#27AE60', edgecolor='white')
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(top_exp['Family_ID'], fontsize=9)
+    ax1.set_xlabel('Genes Gained', fontsize=12)
+    ax1.set_title(f'Top {len(top_exp)} Expanded Families', fontsize=14, fontweight='bold')
+    ax1.invert_yaxis()
+
+    # Add value labels
+    for i, v in enumerate(top_exp['Change']):
+        ax1.text(v + 0.5, i, f'+{int(v)}', va='center', fontsize=9, fontweight='bold')
+
+    # Top contractions
+    ax2 = axes[1]
+    top_con = contractions.head(top_n)
+    y_pos = range(len(top_con))
+    ax2.barh(y_pos, top_con['Change'], color='#E74C3C', edgecolor='white')
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(top_con['Family_ID'], fontsize=9)
+    ax2.set_xlabel('Genes Lost', fontsize=12)
+    ax2.set_title(f'Top {len(top_con)} Contracted Families', fontsize=14, fontweight='bold')
+    ax2.invert_yaxis()
+
+    # Add value labels
+    for i, v in enumerate(top_con['Change']):
+        ax2.text(v - 0.5, i, f'{int(v)}', va='center', ha='right', fontsize=9, fontweight='bold')
+
+    # Main title
+    fig.suptitle(f'Gene Family Changes in {species_name}\n(CAFE5 Analysis)',
+                fontsize=16, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+# Create species-specific plot
+if al_expansions is not None and al_contractions is not None:
+    plot_species_specific_changes(
+        al_expansions,
+        al_contractions,
+        get_focal_species().replace('_', ' '),
+        f"{OUTPUT_FIGURES}/cafe_{FOCAL_SPECIES}_changes",
+        top_n=20
+    )
+```
+
+### 6.3 Link to Orthogroup Sequences
+
+```{python}
+def get_orthogroup_info(
+    family_id: str,
+    gene_counts_path: str = None,
+    sequences_dir: str = None
+) -> Dict:
+    """
+    Get detailed information about an orthogroup for functional annotation.
+    """
+    # Use config paths if not provided
+    if gene_counts_path is None:
+        gene_counts_path = get_path('orthofinder.orthogroups_count')
+    if sequences_dir is None:
+        sequences_dir = get_path('orthofinder.orthogroup_sequences')
+
+    info = {'family_id': family_id}
+
+    # Get gene counts
+    counts_df = pd.read_csv(gene_counts_path, sep="\t")
+    family_row = counts_df[counts_df['Orthogroup'] == family_id]
+
+    if len(family_row) > 0:
+        info['gene_counts'] = family_row.iloc[0].to_dict()
+        info['total_genes'] = family_row.iloc[0]['Total']
+
+    # Check for sequence file
+    seq_path = os.path.join(sequences_dir, f"{family_id}.fa")
+    if os.path.exists(seq_path):
+        info['sequence_file'] = seq_path
+        # Count sequences
+        with open(seq_path, 'r') as f:
+            seq_count = sum(1 for line in f if line.startswith('>'))
+        info['sequence_count'] = seq_count
+
+    return info
+
+# Get info for top expanded and contracted families
+if al_expansions is not None and len(al_expansions) > 0:
+    print("=" * 60)
+    print("TOP EXPANDED FAMILIES - DETAILED INFO")
+    print("=" * 60)
+    for _, row in al_expansions.head(5).iterrows():
+        family_id = row['Family_ID']
+        info = get_orthogroup_info(family_id)
+        print(f"\n{family_id} (+{int(row['Change'])} genes in {get_focal_display_name(abbreviated=True)}):")
+        if 'sequence_file' in info:
+            print(f"  Sequence file: {info['sequence_file']}")
+            print(f"  Total sequences: {info.get('sequence_count', 'N/A')}")
+        if 'total_genes' in info:
+            print(f"  Total genes across species: {info['total_genes']}")
+```
+
+## 7. Publication-Quality Summary Figure
+
+```{python}
+def create_publication_figure(
+    species_summary: pd.DataFrame,
+    all_families: pd.DataFrame,
+    al_expansions: pd.DataFrame,
+    al_contractions: pd.DataFrame,
+    output_path: str
+):
+    """
+    Create a multi-panel publication figure summarizing CAFE5 results.
+    """
+    fig = plt.figure(figsize=(18, 14))
+
+    # Create GridSpec for flexible layout
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 2, figure=fig, hspace=0.3, wspace=0.25)
+
+    # Panel A: Net changes bar plot
+    ax1 = fig.add_subplot(gs[0, 0])
+    if species_summary is not None:
+        df = species_summary.sort_values('Net_Change')
+        colors = ['#27AE60' if x > 0 else '#3498DB' for x in df['Net_Change']]
+
+        # Highlight focal species (use partial match for CAFE5 node ID format)
+        for i, species in enumerate(df['Species']):
+            if get_focal_species() in species:
+                colors[i] = '#E74C3C'
+
+        ax1.barh(range(len(df)), df['Net_Change'], color=colors)
+        ax1.set_yticks(range(len(df)))
+        ax1.set_yticklabels(df['Species'].str.replace('_', ' '), fontsize=9, fontstyle='italic')
+        ax1.set_xlabel('Net Gene Family Change', fontsize=11)
+        ax1.set_title('A. Net Gene Family Changes by Species', fontsize=13, fontweight='bold')
+        ax1.axvline(x=0, color='black', linestyle='-', linewidth=0.8)
+
+    # Panel B: Expansions vs Contractions
+    ax2 = fig.add_subplot(gs[0, 1])
+    if species_summary is not None:
+        df = species_summary.sort_values('Expansions', ascending=False)
+        x = np.arange(len(df))
+        width = 0.35
+
+        ax2.bar(x - width/2, df['Expansions'], width, label='Expansions', color='#27AE60')
+        ax2.bar(x + width/2, df['Contractions'], width, label='Contractions', color='#E74C3C')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(df['Species'].str.replace('_', ' '), rotation=45, ha='right', fontsize=8, fontstyle='italic')
+        ax2.set_ylabel('Number of Gene Families', fontsize=11)
+        ax2.set_title('B. Expansions vs Contractions', fontsize=13, fontweight='bold')
+        ax2.legend(fontsize=9)
+
+    # Panel C: focal species top changes
+    ax3 = fig.add_subplot(gs[1, 0])
+    if al_expansions is not None:
+        top_exp = al_expansions.head(10)
+        y_pos = range(len(top_exp))
+        ax3.barh(y_pos, top_exp['Change'], color='#27AE60')
+        ax3.set_yticks(y_pos)
+        ax3.set_yticklabels(top_exp['Family_ID'], fontsize=9)
+        ax3.set_xlabel('Genes Gained', fontsize=11)
+        ax3.set_title(f"C. Top Expanded Families ({get_focal_species().replace('_', ' ')})", fontsize=13, fontweight='bold')
+        ax3.invert_yaxis()
+
+    # Panel D: P-value distribution
+    ax4 = fig.add_subplot(gs[1, 1])
+    if all_families is not None:
+        pvalue_cols = [c for c in all_families.columns if 'pvalue' in c.lower()]
+        if pvalue_cols:
+            ax4.hist(all_families[pvalue_cols[0]].dropna(), bins=30, color='steelblue',
+                    edgecolor='white', alpha=0.8)
+            ax4.axvline(x=0.05, color='red', linestyle='--', linewidth=2, label='p = 0.05')
+            ax4.set_xlabel('P-value', fontsize=11)
+            ax4.set_ylabel('Number of Families', fontsize=11)
+            ax4.set_title('D. P-value Distribution', fontsize=13, fontweight='bold')
+            ax4.legend(fontsize=9)
+
+    # Main title
+    fig.suptitle('CAFE5 Gene Family Evolution Analysis\nCypriniform Fish Comparative Genomics',
+                fontsize=16, fontweight='bold', y=0.98)
+
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Publication figure saved to: {output_path}.png/pdf")
+
+# Create publication figure
+create_publication_figure(
+    species_summary,
+    all_families,
+    al_expansions,
+    al_contractions,
+    f"{OUTPUT_FIGURES}/cafe_publication_figure"
+)
+```
+
+## 8. Export Results Summary
+
+```{python}
+# Create comprehensive results summary
+def create_results_summary(
+    filter_stats: Dict,
+    species_summary: pd.DataFrame,
+    all_families: pd.DataFrame,
+    sig_families: pd.DataFrame,
+    al_expansions: pd.DataFrame,
+    al_contractions: pd.DataFrame
+) -> Dict:
+    """
+    Create a comprehensive JSON summary of CAFE5 analysis results.
+    """
+    focal_species_key = get_focal_species().lower()
+
+    summary = {
+        'analysis_info': {
+            'tool': 'CAFE5',
+            'version': '5.1.0',
+            'method': 'Birth-death model for gene family evolution'
+        },
+        'input_data': {
+            'total_orthogroups_original': filter_stats.get('original_families', 0),
+            'orthogroups_analyzed': filter_stats.get('filtered_families', 0),
+            'max_copy_threshold': filter_stats.get('max_copy_threshold', 100),
+            'num_species': len(species_summary) if species_summary is not None else 0
+        },
+        'results_summary': {},
+        focal_species_key: {}
+    }
+
+    # Add overall results
+    if all_families is not None:
+        pvalue_cols = [c for c in all_families.columns if 'pvalue' in c.lower()]
+        if pvalue_cols:
+            summary['results_summary']['total_families_analyzed'] = len(all_families)
+            summary['results_summary']['significant_families_p005'] = len(sig_families) if sig_families is not None else 0
+
+    # Add species summary
+    if species_summary is not None:
+        summary['results_summary']['species_with_net_expansion'] = int((species_summary['Net_Change'] > 0).sum())
+        summary['results_summary']['species_with_net_contraction'] = int((species_summary['Net_Change'] < 0).sum())
+
+    # Add focal species specific results
+    if al_expansions is not None:
+        summary[focal_species_key]['families_expanded'] = len(al_expansions)
+        summary[focal_species_key]['families_contracted'] = len(al_contractions) if al_contractions is not None else 0
+        summary[focal_species_key]['total_genes_gained'] = int(al_expansions['Change'].sum())
+        summary[focal_species_key]['total_genes_lost'] = int(al_contractions['Change'].sum()) if al_contractions is not None else 0
+        summary[focal_species_key]['net_change'] = int(al_expansions['Change'].sum() + (al_contractions['Change'].sum() if al_contractions is not None else 0))
+        summary[focal_species_key]['top_5_expanded'] = al_expansions.head(5)['Family_ID'].tolist()
+        summary[focal_species_key]['top_5_contracted'] = al_contractions.head(5)['Family_ID'].tolist() if al_contractions is not None else []
+
+    return summary
+
+# Create and save summary
+results_summary = create_results_summary(
+    filter_stats,
+    species_summary,
+    all_families,
+    sig_families,
+    al_expansions,
+    al_contractions
+)
+
+# Save as JSON
+with open(get_path('cafe.analysis_summary'), 'w') as f:
+    json.dump(results_summary, f, indent=2)
+
+print("=" * 60)
+print("CAFE5 ANALYSIS SUMMARY")
+print("=" * 60)
+print(json.dumps(results_summary, indent=2))
+print()
+print("Summary saved to: ./Outputs/CAFE/analysis_summary.json")
+```
+
+## 9. Summary and Next Steps
+
+```{python}
+print("=" * 60)
+print("CAFE5 ANALYSIS - COMPLETION SUMMARY")
+print("=" * 60)
+print()
+print("Analysis completed successfully!")
+print()
+print("Input Files:")
+print(f"  - Gene counts: ./Outputs/CAFE/gene_counts_cafe_filtered.tsv")
+print(f"  - Ultrametric tree: ./Outputs/CAFE/input_tree.tre")
+print()
+print("Output Directories:")
+print(f"  - Single lambda: ./Outputs/CAFE/cafe_results/single_lambda/")
+print(f"  - With error model: ./Outputs/CAFE/cafe_results/with_error_model/")
+print(f"  - Multi-lambda: ./Outputs/CAFE/cafe_results/multi_lambda/")
+print()
+print("Key Results Files:")
+print(f"  - Species summary: ./Notebooks/Tables/cafe_species_summary.tsv")
+print(f"  - D. maculatus expanded: {get_path('cafe.expanded_families')}")
+print(f"  - D. maculatus contracted: {get_path('cafe.contracted_families')}")
+print(f"  - Analysis summary: ./Outputs/CAFE/analysis_summary.json")
+print()
+print("Figures Generated:")
+print(f"  - cafe_species_changes_barplot.png/pdf")
+print(f"  - cafe_expansions_contractions.png/pdf")
+print(f"  - cafe_pvalue_distribution.png/pdf")
+print(f"  - cafe_tree_changes_ggtree.png/pdf")
+print(f"  - cafe_{get_focal_species()}_changes.png/pdf")
+print(f"  - cafe_publication_figure.png/pdf")
+print()
+print("Next Steps:")
+print("  1. Functional enrichment analysis of significantly expanded/contracted families")
+print("  2. GO term annotation of top gene families")
+print(f"  3. Link to specific genes in {get_focal_species()} for detailed analysis")
+print("  4. Compare results with error model and multi-lambda analyses")
+```
+
+### Out[30]: ✓ Done 0.0s
+```
+============================================================
+CAFE5 ANALYSIS - COMPLETION SUMMARY
+============================================================
+
+Analysis completed successfully!
+
+Input Files:
+  - Gene counts: ./Outputs/CAFE/gene_counts_cafe_filtered.tsv
+  - Ultrametric tree: ./Outputs/CAFE/input_tree.tre
+
+Output Directories:
+  - Single lambda: ./Outputs/CAFE/cafe_results/single_lambda/
+  - With error model: ./Outputs/CAFE/cafe_results/with_error_model/
+  - Multi-lambda: ./Outputs/CAFE/cafe_results/multi_lambda/
+
+Key Results Files:
+  - Species summary: ./Notebooks/Tables/cafe_species_summary.tsv
+  - D. maculatus expanded: ./Outputs/CAFE/Diptychus_maculatus_analysis/expanded_families.tsv
+  - D. maculatus contracted: ./Outputs/CAFE/Diptychus_maculatus_analysis/contracted_families.tsv
+  - Analysis summary: ./Outputs/CAFE/analysis_summary.json
+
+Figures Generated:
+  - cafe_species_changes_barplot.png/pdf
+  - cafe_expansions_contractions.png/pdf
+  - cafe_pvalue_distribution.png/pdf
+  - cafe_tree_changes_ggtree.png/pdf
+  - cafe_Diptychus_maculatus_changes.png/pdf
+  - cafe_publication_figure.png/pdf
+
+Next Steps:
+  1. Functional enrichment analysis of significantly expanded/contracted families
+  2. GO term annotation of top gene families
+  3. Link to specific genes in Diptychus_maculatus for detailed analysis
+  4. Compare results with error model and multi-lambda analyses
+```
+
+`★ Insight ─────────────────────────────────────`
+**Interpreting CAFE5 Results:**
+1. **Significant families** (p < 0.05) are evolving faster than expected under neutral birth-death model
+2. **Net expansion** suggests adaptive gene family growth, often associated with environmental adaptation
+3. **Diptychus maculatus** is adapted to high-altitude freshwater systems - expanded gene families may relate to cold adaptation, hypoxia tolerance, or other environmental adaptations
+4. The top expanded families should be cross-referenced with functional annotations (GO, KEGG) for biological insights
+`─────────────────────────────────────────────────`
+
+## References
+
+1. **CAFE5**: Mendes FK, Vanderpool D, Fulton B, Hahn MW. (2020). CAFE 5 models variation in evolutionary rates among gene families. Bioinformatics 36(22-23):5516-5518
+
+2. **CAFE methodology**: De Bie T, Cristianini N, Demuth JP, Hahn MW. (2006). CAFE: a computational tool for the study of gene family evolution. Bioinformatics 22(10):1269-1271
+
+3. **OrthoFinder**: Emms D.M. & Kelly S. (2019). OrthoFinder: phylogenetic orthology inference for comparative genomics. Genome Biology 20:238
+
+4. **Gene family evolution in fish**: Braasch I, et al. (2016). The spotted gar genome illuminates vertebrate evolution and facilitates human-teleost comparisons. Nature Genetics 48:427-437

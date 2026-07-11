@@ -1,0 +1,920 @@
+---
+title: GO/KO Enrichment Cross-Category Visualization
+subtitle: Four-color combination analysis for CAFE × KaKs overlaps
+jupyter: env_biopython
+---
+
+## Overview
+
+This notebook visualizes cross-category enrichment overlaps from the comparative genomics analysis, focusing on the biological meaning of CAFE (gene family expansion/contraction) combined with KaKs (selection pressure) patterns.
+
+**Data Sources:**
+
+| File | Content |
+|------|---------|
+| `KO_common_terms_summary.csv` | KEGG pathway overlaps |
+| `GO_BP_common_terms_summary.csv` | GO Biological Process |
+| `GO_MF_common_terms_summary.csv` | GO Molecular Function |
+| `GO_CC_common_terms_summary.csv` | GO Cellular Component |
+
+**Four-Color Combination Scheme:**
+
+| Combination | Biological Meaning | Color |
+|-------------|-------------------|-------|
+| CAFE_expanded + KaKs_positive | **Adaptive expansion** - Gene families growing under positive selection | Red |
+| CAFE_expanded + KaKs_purifying | **Essential expansion** - Essential gene families expanding | Blue |
+| CAFE_contracted + KaKs_positive | **Adaptive contraction** - Shrinking families with positive selection | Orange |
+| CAFE_contracted + KaKs_purifying | **Essential contraction** - Shrinking essential gene families | Green |
+
+---
+
+## 1. Environment Setup
+
+### 1.1 Load Configuration
+
+```{python}
+import sys
+from pathlib import Path
+
+# Add config directory to path
+sys.path.insert(0, str(Path("./Notebooks/config")))
+
+# Load centralized configuration
+from load_config import load_paths, get_path, get_version
+
+# Load all paths
+paths = load_paths(config_path="/home/jovyan/Notebooks/config/paths-set2.yaml")
+version = get_version()
+print(f"OrthoFinder version: {version}")
+
+# Project root (container path)
+PROJECT_ROOT = Path(get_path("base.project_root"))
+print(f"Project root: {PROJECT_ROOT}")
+```
+
+### 1.2 Import Libraries
+
+```{python}
+# Standard libraries
+import warnings
+warnings.filterwarnings('ignore')
+
+# Data manipulation
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+
+# Visualization
+import matplotlib
+matplotlib.use('Agg')  # Headless backend
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+import seaborn as sns
+
+print("Standard libraries loaded successfully")
+```
+
+### 1.3 Publication Style Setup
+
+```{python}
+# Set publication-ready defaults with larger fonts for readability
+plt.rcParams.update({
+    'font.size': 14,              # Base font size (increased from 12)
+    'font.family': 'sans-serif',
+    'axes.titlesize': 16,         # Title font size (increased from 14)
+    'axes.titleweight': 'bold',
+    'axes.labelsize': 14,         # Axis label font size (increased from 12)
+    'axes.labelweight': 'bold',
+    'axes.linewidth': 1.2,
+    'xtick.labelsize': 12,        # X-tick label font size (increased from 10)
+    'ytick.labelsize': 12,        # Y-tick label font size (increased from 10)
+    'legend.fontsize': 12,        # Legend font size (increased from 10)
+    'legend.title_fontsize': 13,  # Legend title font size
+    'figure.dpi': 150,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'savefig.pad_inches': 0.1,
+})
+sns.set_style("whitegrid")
+
+print("Publication style configured (large fonts)")
+```
+
+### 1.4 Define Four-Color Combination Scheme
+
+```{python}
+# Four-color scheme for CAFE × KaKs combinations
+COMBINATION_COLORS = {
+    "Expanded + Positive": "#E41A1C",      # Red - Adaptive expansion
+    "Expanded + Purifying": "#377EB8",     # Blue - Essential expansion
+    "Contracted + Positive": "#FF7F00",    # Orange - Adaptive contraction
+    "Contracted + Purifying": "#4DAF4A",   # Green - Essential contraction
+}
+
+# Mapping from analysis column values to combination labels
+def get_combination_label(analyses_str: str) -> str:
+    """Map analysis combination string to four-color label.
+
+    Args:
+        analyses_str: String like "CAFE_expanded; KaKs_strong_purifying"
+
+    Returns:
+        Combination label or None if not a CAFE×KaKs combination
+    """
+    if pd.isna(analyses_str):
+        return None
+
+    analyses = [a.strip() for a in analyses_str.split(';')]
+
+    # Determine CAFE direction
+    has_expanded = any('expanded' in a.lower() for a in analyses)
+    has_contracted = any('contracted' in a.lower() for a in analyses)
+
+    # Determine selection type
+    has_positive = any('positive' in a.lower() for a in analyses)
+    has_purifying = any('purifying' in a.lower() for a in analyses)
+
+    # Create combination label
+    if has_expanded and has_positive:
+        return "Expanded + Positive"
+    elif has_expanded and has_purifying:
+        return "Expanded + Purifying"
+    elif has_contracted and has_positive:
+        return "Contracted + Positive"
+    elif has_contracted and has_purifying:
+        return "Contracted + Purifying"
+    else:
+        return None
+
+# Test the mapping
+test_cases = [
+    "CAFE_expanded; KaKs_positive_tentative",
+    "CAFE_expanded; KaKs_strong_purifying",
+    "CAFE_contracted; KaKs_positive_tentative",
+    "CAFE_contracted; KaKs_strong_purifying",
+]
+print("Combination mapping test:")
+for tc in test_cases:
+    print(f"  '{tc}' -> '{get_combination_label(tc)}'")
+```
+
+### 1.5 Create Output Directories
+
+```{python}
+# Create output directories
+output_base = Path(get_path("outputs.figures")) / "EnrichmentComparison"
+tables_dir = Path(get_path("outputs.tables"))
+
+output_base.mkdir(parents=True, exist_ok=True)
+tables_dir.mkdir(parents=True, exist_ok=True)
+
+print(f"Output directory: {output_base}")
+print(f"Tables directory: {tables_dir}")
+```
+
+---
+
+## 2. Data Loading
+
+### 2.1 Load Enrichment Summary Files
+
+> You should have generated the following files by running the enrichment analyses and comparison script: `scripts/find_common_enrichment_terms.py`
+
+```{python}
+# Define data paths
+enrichment_dir = Path(get_path("base.outputs")) / "EnrichmentComparison"
+
+# File mapping for each ontology type
+ontology_files = {
+    "KO": {
+        "summary": enrichment_dir / "KO_common_terms_summary.csv",
+        "detailed": enrichment_dir / "KO_common_terms_detailed.csv",
+        "presence": enrichment_dir / "KO_presence_matrix.csv",
+    },
+    "GO_BP": {
+        "summary": enrichment_dir / "GO_BP_common_terms_summary.csv",
+        "detailed": enrichment_dir / "GO_BP_common_terms_detailed.csv",
+        "presence": enrichment_dir / "GO_BP_presence_matrix.csv",
+    },
+    "GO_MF": {
+        "summary": enrichment_dir / "GO_MF_common_terms_summary.csv",
+        "detailed": enrichment_dir / "GO_MF_common_terms_detailed.csv",
+        "presence": enrichment_dir / "GO_MF_presence_matrix.csv",
+    },
+    "GO_CC": {
+        "summary": enrichment_dir / "GO_CC_common_terms_summary.csv",
+        "detailed": enrichment_dir / "GO_CC_common_terms_detailed.csv",
+        "presence": enrichment_dir / "GO_CC_presence_matrix.csv",
+    },
+}
+
+# Load all data
+data = {}
+for ontology, files in ontology_files.items():
+    data[ontology] = {}
+    for file_type, file_path in files.items():
+        if file_path.exists():
+            df = pd.read_csv(file_path)
+            data[ontology][file_type] = df
+            print(f"Loaded {ontology} {file_type}: {len(df)} rows")
+        else:
+            print(f"Warning: {file_path.name} not found")
+            data[ontology][file_type] = pd.DataFrame()
+```
+
+### 2.2 Data Overview
+
+```{python}
+# Show data summary
+print("\n" + "=" * 60)
+print("Data Summary")
+print("=" * 60)
+
+for ontology in data:
+    summary_df = data[ontology].get("summary", pd.DataFrame())
+    if not summary_df.empty:
+        print(f"\n{ontology}:")
+        print(f"  Total enriched terms: {len(summary_df)}")
+        if 'analyses' in summary_df.columns:
+            # Count unique analysis combinations
+            combos = summary_df['analyses'].value_counts()
+            print(f"  Unique analysis combinations: {len(combos)}")
+            print("  Top combinations:")
+            for combo, count in combos.head(3).items():
+                print(f"    - {combo}: {count} terms")
+```
+
+---
+
+## 3. Data Preprocessing
+
+### 3.1 Filter to CAFE × KaKs Combinations
+
+```{python}
+def preprocess_enrichment_data(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Filter and annotate enrichment data for CAFE × KaKs combinations.
+
+    Args:
+        summary_df: Summary DataFrame with 'analyses' column
+
+    Returns:
+        Filtered DataFrame with combination labels and colors
+    """
+    if summary_df.empty or 'analyses' not in summary_df.columns:
+        return pd.DataFrame()
+
+    # Add combination labels
+    df = summary_df.copy()
+    df['combination'] = df['analyses'].apply(get_combination_label)
+
+    # Filter to only CAFE × KaKs combinations (not None)
+    df = df[df['combination'].notna()].copy()
+
+    # Add color column
+    df['color'] = df['combination'].map(COMBINATION_COLORS)
+
+    # Add -log10(p-value) for plotting
+    df['neg_log10_pval'] = -np.log10(df['min_p_adjust'].clip(lower=1e-50))
+
+    return df
+
+# Preprocess all ontologies
+processed_data = {}
+for ontology in data:
+    summary_df = data[ontology].get("summary", pd.DataFrame())
+    processed_df = preprocess_enrichment_data(summary_df)
+    processed_data[ontology] = processed_df
+
+    if not processed_df.empty:
+        print(f"\n{ontology} - CAFE × KaKs combinations:")
+        combo_counts = processed_df['combination'].value_counts()
+        for combo, count in combo_counts.items():
+            print(f"  {combo}: {count} terms")
+    else:
+        print(f"\n{ontology}: No CAFE × KaKs combinations found")
+```
+
+### 3.2 Create Combined Dataset for Cross-Ontology Analysis
+
+```{python}
+# Combine all processed data with ontology labels
+combined_data = []
+for ontology, df in processed_data.items():
+    if not df.empty:
+        df_copy = df.copy()
+        df_copy['ontology'] = ontology
+        combined_data.append(df_copy)
+
+if combined_data:
+    combined_df = pd.concat(combined_data, ignore_index=True)
+    print(f"Combined dataset: {len(combined_df)} total terms across all ontologies")
+    print("\nBreakdown by ontology and combination:")
+    summary = combined_df.groupby(['ontology', 'combination']).size().unstack(fill_value=0)
+    print(summary)
+else:
+    combined_df = pd.DataFrame()
+    print("No data available for combined analysis")
+```
+
+---
+
+## 4. Visualization 1: Combination Bar Chart
+
+### 4.1 Helper Functions for Plotting
+
+```{python}
+import textwrap
+
+def wrap_text(text: str, width: int = 40) -> str:
+    """Wrap long text with line breaks for display.
+
+    Args:
+        text: Input text string
+        width: Maximum characters per line
+
+    Returns:
+        Text with newlines inserted for wrapping
+    """
+    if pd.isna(text):
+        return ""
+    return '\n'.join(textwrap.wrap(str(text), width=width))
+
+
+def save_figure(fig, name: str, output_dir: Path = output_base):
+    """Save figure in multiple formats (PNG and PDF).
+
+    Args:
+        fig: matplotlib Figure object
+        name: Base filename without extension
+        output_dir: Output directory path
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save PNG (300 DPI)
+    png_path = output_dir / f"{name}.png"
+    fig.savefig(str(png_path), dpi=300, bbox_inches='tight', facecolor='white')
+
+    # Save PDF
+    pdf_path = output_dir / f"{name}.pdf"
+    fig.savefig(str(pdf_path), bbox_inches='tight', facecolor='white')
+
+    print(f"Saved: {name}.png and {name}.pdf")
+
+
+def create_combination_barchart(df: pd.DataFrame, title: str,
+                                max_terms: int = 15,
+                                figsize: tuple = (12, 10)) -> plt.Figure:
+    """Create a horizontal bar chart showing enriched terms by significance.
+
+    Bars are colored by CAFE × KaKs combination type, with gene count
+    annotated as text. Full term names are displayed with line wrapping.
+
+    Args:
+        df: Preprocessed DataFrame with combination labels
+        title: Plot title
+        max_terms: Maximum number of terms to display
+        figsize: Figure size tuple
+
+    Returns:
+        matplotlib Figure object
+    """
+    if df.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, f"No CAFE × KaKs combinations found for {title}",
+                ha='center', va='center', fontsize=14)
+        ax.set_axis_off()
+        return fig
+
+    # Sort by significance and take top terms
+    df_sorted = df.nsmallest(max_terms, 'min_p_adjust').copy()
+
+    # Wrap long descriptions (full text with line breaks)
+    df_sorted['Description_wrapped'] = df_sorted['Description'].apply(
+        lambda x: wrap_text(str(x), width=45)
+    )
+
+    # Create figure with extra height for wrapped text
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Create horizontal bar chart
+    y_positions = range(len(df_sorted))
+    bar_height = 0.7
+
+    for y, (_, row) in zip(y_positions, df_sorted.iterrows()):
+        color = COMBINATION_COLORS.get(row['combination'], 'gray')
+
+        # Draw bar for -log10(p-value)
+        ax.barh(y, row['neg_log10_pval'], height=bar_height,
+               color=color, alpha=0.85, edgecolor='black', linewidth=0.5)
+
+        # Add gene count annotation at end of bar
+        ax.text(row['neg_log10_pval'] + 0.15, y, f"n={int(row['total_count'])}",
+               va='center', ha='left', fontsize=13, fontweight='bold')
+
+    # Set y-axis labels with wrapped text (LARGE FONT for term readability)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(df_sorted['Description_wrapped'], fontsize=13,
+                       linespacing=0.95)
+
+    # Labels and title
+    ax.set_xlabel('-log₁₀(adjusted p-value)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('')
+    ax.set_title(title, fontsize=18, fontweight='bold', pad=15)
+
+    # Invert y-axis so most significant (smallest p-value) is at top
+    ax.invert_yaxis()
+
+    # Add significance threshold line
+    sig_threshold = -np.log10(0.05)
+    ax.axvline(x=sig_threshold, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
+    ax.text(sig_threshold + 0.1, -0.5, 'p = 0.05', fontsize=12, color='red', va='bottom')
+
+    # Add grid
+    ax.set_axisbelow(True)
+    ax.xaxis.grid(True, linestyle='--', alpha=0.3)
+
+    # Extend x-axis slightly for gene count labels
+    x_max = df_sorted['neg_log10_pval'].max()
+    ax.set_xlim(0, x_max * 1.15)
+
+    # Add legend for colors
+    color_legend_handles = [
+        mpatches.Patch(facecolor=color, edgecolor='black', linewidth=0.5,
+                      label=label)
+        for label, color in COMBINATION_COLORS.items()
+    ]
+
+    ax.legend(handles=color_legend_handles, title='CAFE × KaKs Combination',
+              loc='lower right', frameon=True, fontsize=12, title_fontsize=13)
+
+    # Adjust layout
+    plt.tight_layout()
+
+    return fig
+```
+
+### 4.2 Generate Bar Charts for Each Ontology
+
+```{python}
+#| label: barchart-ko
+#| fig-width: 12
+#| fig-height: 10
+
+# KO (KEGG Pathways) Bar Chart
+ko_df = processed_data.get("KO", pd.DataFrame())
+fig_ko = create_combination_barchart(
+    ko_df,
+    "KEGG Pathways: CAFE × KaKs Enrichment",
+    max_terms=15
+)
+save_figure(fig_ko, "KO_combination_barchart")
+plt.show()
+```
+
+```{python}
+#| label: barchart-gobp
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Biological Process Bar Chart
+gobp_df = processed_data.get("GO_BP", pd.DataFrame())
+fig_gobp = create_combination_barchart(
+    gobp_df,
+    "GO Biological Process: CAFE × KaKs Enrichment",
+    max_terms=15
+)
+save_figure(fig_gobp, "GO_BP_combination_barchart")
+plt.show()
+```
+
+```{python}
+#| label: barchart-gomf
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Molecular Function Bar Chart
+gomf_df = processed_data.get("GO_MF", pd.DataFrame())
+fig_gomf = create_combination_barchart(
+    gomf_df,
+    "GO Molecular Function: CAFE × KaKs Enrichment",
+    max_terms=15
+)
+save_figure(fig_gomf, "GO_MF_combination_barchart")
+plt.show()
+```
+
+```{python}
+#| label: barchart-gocc
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Cellular Component Bar Chart
+gocc_df = processed_data.get("GO_CC", pd.DataFrame())
+fig_gocc = create_combination_barchart(
+    gocc_df,
+    "GO Cellular Component: CAFE × KaKs Enrichment",
+    max_terms=15
+)
+save_figure(fig_gocc, "GO_CC_combination_barchart")
+plt.show()
+```
+
+---
+
+## 5. Visualization 2: Overview Dotplots (Gene Count as Dot Size)
+
+These dotplots show the top enriched terms for each ontology, with:
+- **X-axis**: -log₁₀(adjusted p-value) showing significance
+- **Y-axis**: Enriched terms (most significant at top)
+- **Dot size**: Gene count
+- **Dot color**: CAFE × KaKs combination type
+
+### 5.1 Create Overview Dotplot Function
+
+```{python}
+def create_overview_dotplot(df: pd.DataFrame, title: str,
+                            max_terms: int = 15,
+                            figsize: tuple = (12, 10)) -> plt.Figure:
+    """Create an overview dotplot with gene count as dot size.
+
+    Full term names are displayed with line wrapping for readability.
+
+    Args:
+        df: Preprocessed DataFrame with combination labels
+        title: Plot title
+        max_terms: Maximum number of terms to display
+        figsize: Figure size tuple
+
+    Returns:
+        matplotlib Figure object
+    """
+    if df.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, f"No CAFE × KaKs combinations found for {title}",
+               ha='center', va='center', fontsize=14)
+        ax.set_axis_off()
+        return fig
+
+    # Take top terms by significance (smallest p-values first)
+    df_top = df.nsmallest(max_terms, 'min_p_adjust').copy()
+
+    # Wrap long descriptions (full text with line breaks)
+    df_top['Description_wrapped'] = df_top['Description'].apply(
+        lambda x: wrap_text(str(x), width=45)
+    )
+
+    # Create figure with extra height for wrapped text
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Create dotplot: X = -log10(p), Y = term, Size = gene count, Color = combination
+    y_positions = range(len(df_top))
+
+    for y, (_, row) in zip(y_positions, df_top.iterrows()):
+        color = COMBINATION_COLORS.get(row['combination'], 'gray')
+
+        # Draw dot with size proportional to gene count
+        ax.scatter(
+            x=row['neg_log10_pval'],
+            y=y,
+            s=row['total_count'] * 0.8,  # Scale factor for visibility
+            c=color,
+            alpha=0.8,
+            edgecolors='black',
+            linewidths=0.5
+        )
+
+    # Set y-axis labels with wrapped text (LARGE FONT for term readability)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(df_top['Description_wrapped'], fontsize=13,
+                       linespacing=0.95)
+    ax.set_xlabel('-log₁₀(adjusted p-value)', fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=18, fontweight='bold', pad=15)
+
+    # Invert y-axis so most significant (smallest p-value) is at top
+    ax.invert_yaxis()
+
+    # Add significance line
+    sig_threshold = -np.log10(0.05)
+    ax.axvline(x=sig_threshold, color='red', linestyle='--',
+              linewidth=1.5, alpha=0.7)
+    ax.text(sig_threshold + 0.1, -0.5, 'p = 0.05',
+           fontsize=12, color='red', va='bottom')
+
+    # Grid
+    ax.set_axisbelow(True)
+    ax.xaxis.grid(True, linestyle='--', alpha=0.3)
+
+    # Legend for colors
+    color_handles = [
+        mpatches.Patch(facecolor=color, edgecolor='black', linewidth=0.5, label=label)
+        for label, color in COMBINATION_COLORS.items()
+    ]
+
+    # Legend for sizes
+    size_legend_values = [50, 200, 500]
+    size_handles = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
+               markersize=np.sqrt(v * 0.8), label=f'{v} genes',
+               markeredgecolor='black', markeredgewidth=0.5)
+        for v in size_legend_values
+    ]
+
+    # Add both legends
+    legend1 = ax.legend(handles=color_handles, title='Combination Type',
+                        loc='lower right', bbox_to_anchor=(1.0, 0.0),
+                        frameon=True, fontsize=12, title_fontsize=13)
+    ax.add_artist(legend1)
+
+    ax.legend(handles=size_handles, title='Gene Count',
+              loc='lower right', bbox_to_anchor=(1.0, 0.35),
+              frameon=True, fontsize=12, title_fontsize=13)
+
+    plt.tight_layout()
+
+    return fig
+```
+
+### 5.2 Generate Overview Dotplots
+
+```{python}
+#| label: overview-dotplot-ko
+#| fig-width: 12
+#| fig-height: 10
+
+# KO (KEGG Pathways) Overview Dotplot
+ko_df = processed_data.get("KO", pd.DataFrame())
+fig_overview_ko = create_overview_dotplot(
+    ko_df,
+    "KEGG Pathways: Top Enriched Terms by CAFE × KaKs Combination",
+    max_terms=15
+)
+save_figure(fig_overview_ko, "KO_overview_dotplot")
+plt.show()
+```
+
+```{python}
+#| label: overview-dotplot-gobp
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Biological Process Overview Dotplot
+gobp_df = processed_data.get("GO_BP", pd.DataFrame())
+fig_overview_gobp = create_overview_dotplot(
+    gobp_df,
+    "GO Biological Process: Top Enriched Terms by CAFE × KaKs Combination",
+    max_terms=15
+)
+save_figure(fig_overview_gobp, "GO_BP_overview_dotplot")
+plt.show()
+```
+
+```{python}
+#| label: overview-dotplot-gomf
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Molecular Function Overview Dotplot
+gomf_df = processed_data.get("GO_MF", pd.DataFrame())
+fig_overview_gomf = create_overview_dotplot(
+    gomf_df,
+    "GO Molecular Function: Top Enriched Terms by CAFE × KaKs Combination",
+    max_terms=15
+)
+save_figure(fig_overview_gomf, "GO_MF_overview_dotplot")
+plt.show()
+```
+
+```{python}
+#| label: overview-dotplot-gocc
+#| fig-width: 12
+#| fig-height: 10
+
+# GO Cellular Component Overview Dotplot
+gocc_df = processed_data.get("GO_CC", pd.DataFrame())
+fig_overview_gocc = create_overview_dotplot(
+    gocc_df,
+    "GO Cellular Component: Top Enriched Terms by CAFE × KaKs Combination",
+    max_terms=15
+)
+save_figure(fig_overview_gocc, "GO_CC_overview_dotplot")
+plt.show()
+```
+
+---
+
+## 6. Export Summary Tables
+
+### 6.1 Create Combined Summary Table
+
+```{python}
+# Combine all processed data into a single summary table
+if combined_df is not None and not combined_df.empty:
+    # Select key columns for export
+    export_cols = ['ontology', 'ID', 'Description', 'combination',
+                   'min_p_adjust', 'total_count', 'analyses']
+
+    # Filter to available columns
+    export_cols = [c for c in export_cols if c in combined_df.columns]
+
+    summary_export = combined_df[export_cols].copy()
+
+    # Sort by ontology, then combination, then p-value
+    summary_export = summary_export.sort_values(
+        ['ontology', 'combination', 'min_p_adjust']
+    )
+
+    # Save to CSV
+    export_path = tables_dir / "enrichment_combination_summary.csv"
+    summary_export.to_csv(export_path, index=False)
+    print(f"Exported summary table: {export_path}")
+    print(f"Total rows: {len(summary_export)}")
+
+    # Show preview
+    print("\nPreview of exported data:")
+    print(summary_export.head(10).to_string())
+else:
+    print("No data available for export")
+```
+
+### 6.2 Create Per-Ontology Statistics
+
+```{python}
+# Generate statistics per ontology
+print("\n" + "=" * 60)
+print("Per-Ontology Statistics")
+print("=" * 60)
+
+stats_data = []
+for ontology, df in processed_data.items():
+    if df.empty:
+        continue
+
+    for combo in COMBINATION_COLORS:
+        subset = df[df['combination'] == combo]
+        if not subset.empty:
+            stats_data.append({
+                'Ontology': ontology,
+                'Combination': combo,
+                'Term Count': len(subset),
+                'Mean -log10(p)': subset['neg_log10_pval'].mean(),
+                'Mean Gene Count': subset['total_count'].mean(),
+                'Top Term': subset.nsmallest(1, 'min_p_adjust')['Description'].values[0][:40]
+            })
+
+if stats_data:
+    stats_df = pd.DataFrame(stats_data)
+
+    # Save statistics
+    stats_path = tables_dir / "enrichment_combination_statistics.csv"
+    stats_df.to_csv(stats_path, index=False)
+    print(f"\nExported statistics: {stats_path}")
+
+    # Display pivot table
+    print("\nTerm counts by ontology and combination:")
+    pivot = stats_df.pivot_table(
+        values='Term Count',
+        index='Ontology',
+        columns='Combination',
+        fill_value=0
+    )
+    print(pivot.to_string())
+else:
+    print("No statistics data available")
+```
+
+---
+
+## 7. Session Summary
+
+### 7.1 Output File Summary
+
+```{python}
+print("=" * 60)
+print("Generated Outputs")
+print("=" * 60)
+
+# List all generated figures
+print("\nFigures:")
+for f in sorted(output_base.glob("*.png")):
+    size_kb = f.stat().st_size / 1024
+    print(f"  - {f.name} ({size_kb:.1f} KB)")
+
+# List tables
+print("\nTables:")
+for f in sorted(tables_dir.glob("enrichment_*.csv")):
+    size_kb = f.stat().st_size / 1024
+    print(f"  - {f.name} ({size_kb:.1f} KB)")
+```
+
+#### Out[27]: ✓ Done 0.0s
+
+```
+============================================================
+Generated Outputs
+============================================================
+
+Figures:
+  - GO_BP_combination_barchart.png (422.1 KB)
+  - GO_BP_combination_dotplot.png (404.3 KB)
+  - GO_BP_overview_dotplot.png (447.6 KB)
+  - GO_CC_combination_barchart.png (206.0 KB)
+  - GO_CC_combination_dotplot.png (192.4 KB)
+  - GO_CC_overview_dotplot.png (224.8 KB)
+  - GO_MF_combination_barchart.png (269.5 KB)
+  - GO_MF_combination_dotplot.png (269.2 KB)
+  - GO_MF_overview_dotplot.png (293.9 KB)
+  - KO_combination_barchart.png (305.0 KB)
+  - KO_combination_dotplot.png (349.1 KB)
+  - KO_overview_dotplot.png (349.4 KB)
+
+Tables:
+  - enrichment_combination_statistics.csv (0.8 KB)
+  - enrichment_combination_summary.csv (4.4 KB)
+```
+
+### 7.2 Biological Interpretation Guide
+
+The four-color scheme represents distinct evolutionary patterns:
+
+| Combination | Color | Interpretation |
+|-------------|-------|----------------|
+| **Expanded + Positive** | Red | Gene families that have grown in *A. laticeps* AND show positive selection. These represent **adaptive innovations** - new functions being refined by selection. |
+| **Expanded + Purifying** | Blue | Gene families that have grown while under purifying selection. These are **essential expansions** - duplicating conserved, important functions. |
+| **Contracted + Positive** | Orange | Shrinking gene families with positive selection on remaining copies. Indicates **adaptive specialization** - losing redundant copies while optimizing survivors. |
+| **Contracted + Purifying** | Green | Shrinking essential gene families. May indicate **dosage reduction** in highly conserved pathways, possibly related to specialized ecology. |
+
+### 7.3 Key Findings Summary
+
+```{python}
+print("\n" + "=" * 60)
+print("Key Findings")
+print("=" * 60)
+
+for ontology, df in processed_data.items():
+    if df.empty:
+        continue
+
+    print(f"\n{ontology}:")
+    combo_counts = df['combination'].value_counts()
+    dominant = combo_counts.idxmax()
+    print(f"  Dominant pattern: {dominant} ({combo_counts[dominant]} terms)")
+
+    # Top term for each combination
+    for combo in COMBINATION_COLORS:
+        subset = df[df['combination'] == combo]
+        if not subset.empty:
+            top_term = subset.nsmallest(1, 'min_p_adjust')
+            print(f"  Top {combo}:")
+            print(f"    {top_term['Description'].values[0][:50]}...")
+            print(f"    p-adj = {top_term['min_p_adjust'].values[0]:.2e}, n = {top_term['total_count'].values[0]}")
+```
+
+---
+
+## 8. Technical Notes
+
+### Dependencies
+
+```{python}
+import sys
+print(f"Python: {sys.version}")
+
+packages = ['pandas', 'numpy', 'matplotlib', 'seaborn']
+optional = ['upsetplot']
+
+for pkg in packages:
+    try:
+        mod = __import__(pkg)
+        print(f"{pkg}: {mod.__version__}")
+    except:
+        print(f"{pkg}: Not available")
+
+for pkg in optional:
+    try:
+        mod = __import__(pkg)
+        print(f"{pkg}: {mod.__version__}")
+    except:
+        print(f"{pkg}: Not installed (optional)")
+```
+
+#### Out[24]: ✓ Done 0.0s
+- Python: 3.13.1 | packaged by conda-forge | (main, Jan 13 2025, 09:53:10) [GCC 13.3.0]
+- pandas: 2.2.3
+- numpy: 2.2.2
+- matplotlib: 3.10.0
+- seaborn: 0.13.2
+- upsetplot: 0.9.0
+
+### Data Requirements
+
+This notebook requires the following input files from enrichment analysis:
+
+1. `${base.outputs}/EnrichmentComparison/*_common_terms_summary.csv` - Summary of common enriched terms
+2. `${base.outputs}/EnrichmentComparison/*_common_terms_detailed.csv` - Per-analysis statistics
+3. `${base.outputs}/EnrichmentComparison/*_presence_matrix.csv` - Binary presence/absence matrix
+
+Generate these files by running:
+- `4-ultimate-EnrichmentAnalysis4SpecificOGs.qmd` (CAFE enrichment)
+- `4-ultimate-EnrichmentAnalysis4SpecificOGs-KaKs.qmd` (KaKs enrichment)
+- `scripts/find_common_enrichment_terms.py` (comparison analysis)

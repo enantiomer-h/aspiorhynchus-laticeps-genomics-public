@@ -1,0 +1,1068 @@
+---
+title: "Genome Preprocessing Pipeline Guide"
+subtitle: "Complete guide for running repeat masking and gene annotation"
+author: "Comparative Genomics Project (by HUANG Yuxiang)"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: false
+    code-overflow: wrap
+---
+
+# Overview
+
+This guide provides step-by-step instructions for running the genome preprocessing pipeline (`scripts/preprocess_all.sh`). The pipeline performs:
+
+1. **Repeat identification** using RepeatModeler
+2. **Repeat masking** using RepeatMasker
+3. **Gene annotation** using BRAKER3 (on both masked and unmasked genomes)
+4. **Protein output** - BRAKER3 automatically generates protein sequences (`braker.aa`)
+5. **Quality assessment** using BUSCO
+
+## Target Species
+
+The pipeline processes 13 fish species for comparative genomics analysis:
+
+| Species | Common Name | Accession |
+|---------|-------------|-----------|
+| *Anabarilius grahami* | Kunming barb | GCA_003731715.1 |
+| *Aspiorhynchus laticeps* | Big-head schizothoracin | GCA_023376895.1 |
+| *Carassius auratus* | Goldfish | GCA_003368295.1 |
+| *Cyprinus carpio* | Common carp | GCF_018340385.1 |
+| *Danio rerio* | Zebrafish | GCF_000002035.6 |
+| *Gymnocypris eckloni* | Naked carp | GCA_027564155.1 |
+| *Labeo rohita* | Rohu | GCA_022985175.1 |
+| *Onychostoma macrolepis* | Largescale shoveljaw fish | GCA_012432095.1 |
+| *Oxygymnocypris stewartii* | Tibetan naked carp | GCA_003573665.1 |
+| *Schizothorax macropogon* | | GCA_041051915.1 |
+| *Sinocyclocheilus grahami* | Golden-line fish | GCA_001515645.1 |
+| *Triplophysa bombifrons* | | GCA_029783895.1 |
+| *Triplophysa dalaica* | | GCA_015846415.1 |
+
+## Pipeline Steps
+
+For each species, the pipeline executes these steps **sequentially**:
+
+```
+1_build_db           → BuildDatabase for RepeatModeler
+       ↓
+2_repeat_modeler     → De novo repeat family identification
+       ↓
+3_repeat_masker      → Mask repetitive elements
+       ↓
+   ┌───────────────┴───────────────┐
+   ↓                               ↓
+4_braker                    4.5_braker_unmasked
+(masked genome)             (unmasked genome - for comparison)
+   ↓                               ↓
+5_copy_proteins             5.5_copy_proteins_unmasked
+(copy braker.aa)            (copy braker.aa)
+   ↓                               ↓
+6_busco                     6.5_busco_unmasked
+```
+
+> **Important**: Steps must run sequentially within each species (each step depends on the previous), but different species can be processed in parallel.
+
+> **Note on Protein Extraction**: Steps 5 and 5.5 simply copy BRAKER's built-in protein output (`braker.aa`) instead of using gffread extraction. This avoids sequence ID mismatch issues where BRAKER/AUGUSTUS modifies FASTA headers.
+
+---
+
+# Prerequisites
+
+## System Requirements
+
+- **Operating System**: Linux (tested on Arch Linux)
+- **RAM**: Minimum 32 GB (64 GB recommended for large genomes)
+- **Storage**: ~50 GB per species for intermediate files
+- **CPU**: 8+ cores recommended
+
+## Software Requirements
+
+- [Conda](https://docs.conda.io/en/latest/) or [Mamba](https://mamba.readthedocs.io/) (recommended)
+- wget or curl for downloading files
+
+---
+
+# Installing Dependencies
+
+This section guides you through installing all required bioinformatics tools.
+
+## Install Genome Annotation Environment
+
+Create a dedicated Conda environment with RepeatModeler, RepeatMasker, and BUSCO:
+
+```bash
+mamba create -n genome_annotation_env -y -c conda-forge -c bioconda \
+    repeatmodeler repeatmasker busco=6.0.0 sepp=4.5.5
+```
+
+> **Note**: BUSCO 6.0.0 should be installed with SEPP 4.5.5 for auto-lineage compatibility. This installation may take several minutes due to the many dependencies these tools require.
+
+> **Note on gffread**: The tool `gffread` is NOT required for this pipeline since BRAKER3 already outputs protein sequences directly (`braker.aa`). You only need gffread if you plan to do custom GFF3 manipulations outside this pipeline.
+
+### Verify RepeatModeler Installation
+
+RepeatModeler is used for de novo repeat family identification and modeling:
+
+```bash
+conda run -n genome_annotation_env RepeatModeler -version
+```
+
+Expected output: `RepeatModeler version 2.x.x`
+
+### Verify RepeatMasker Installation
+
+RepeatMasker screens DNA sequences for interspersed repeats and low complexity regions:
+
+```bash
+conda run -n genome_annotation_env RepeatMasker -version
+```
+
+### Verify BUSCO Installation
+
+BUSCO (Benchmarking Universal Single-Copy Orthologs) assesses genome assembly and annotation completeness:
+
+```bash
+conda run -n genome_annotation_env busco --version
+```
+
+### Troubleshooting Installation
+
+If you encounter issues during installation:
+
+- **Mamba/conda hangs**: Try creating a fresh environment rather than installing into an existing one
+- **RepeatModeler version**: Version 2.0.x includes the LTR structural discovery pipeline (`-LTRStruct` option)
+- **Perl-related errors**: Install `perl-File-Which`:
+
+```bash
+mamba install -n genome_annotation_env -y perl-file-which
+```
+
+## Install BRAKER3
+
+BRAKER3 is a fully automated pipeline for eukaryotic genome annotation that combines GeneMark-ETP with AUGUSTUS.
+
+### Create BRAKER Environment
+
+```bash
+mamba create -n braker3_env -y -c bioconda -c conda-forge \
+    braker3 augustus
+```
+
+> **Note**: This installation may take 10-20 minutes due to the many Perl dependencies and compiled tools required.
+
+### Verify BRAKER Installation
+
+```bash
+conda run -n braker3_env braker.pl --version
+```
+
+### Verify AUGUSTUS Installation
+
+AUGUSTUS is the core gene prediction tool used by BRAKER:
+
+```bash
+conda run -n braker3_env augustus --version
+```
+
+### Check AUGUSTUS Config Path
+
+BRAKER needs a writable AUGUSTUS config directory:
+
+```bash
+conda run -n braker3_env bash -c 'echo $AUGUSTUS_CONFIG_PATH'
+```
+
+### Download GeneMark-ETP (Manual Step Required)
+
+GeneMark-ETP requires a license agreement and must be downloaded manually:
+
+1. Visit: <http://exon.gatech.edu/GeneMark/license_download.cgi>
+2. Select **"GeneMark-ETP"** and agree to the license
+3. Download the appropriate version for Linux 64-bit
+4. Extract to `./Apps/GeneMark-ETP/`
+
+```bash
+# After downloading, extract GeneMark-ETP:
+mkdir -p ./Apps/GeneMark-ETP
+tar -xzf gmetp_linux_64.tar.gz -C ./Apps/GeneMark-ETP
+
+# Copy the license key to your home directory
+gzip -d ./Apps/gm_key.gz
+cp ./Apps/gm_key ~/.gm_key
+```
+
+### Set GeneMark Environment Variables
+
+Before running BRAKER, you need to set the GeneMark path:
+
+```bash
+export GENEMARK_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"
+export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes/ProtHint/bin"
+```
+
+> **Tip**: Add these lines to your `~/.bashrc` or create a wrapper script.
+
+### Test BRAKER
+
+Test that BRAKER can find its dependencies:
+
+```bash
+conda run -n braker3_env braker.pl --help | head -50
+```
+
+---
+
+# Preparing Input Files
+
+Before running the pipeline, you need to prepare the input data.
+
+## Directory Structure
+
+The pipeline expects the following directory structure:
+
+```
+ComparativeGenomics4AL_Publication/
+├── DB/
+│   ├── GENOME_Comparison/
+│   │   ├── Anabarilius_grahami/
+│   │   │   └── ncbi_dataset/
+│   │   │       └── data/
+│   │   │           └── GCA_003731715.1/
+│   │   │               └── GCA_003731715.1_BGI_Agra_1.0_genomic.fna  ← GENOME FILE
+│   │   ├── Aspiorhynchus_laticeps/
+│   │   │   └── ncbi_dataset/
+│   │   │       └── data/
+│   │   │           └── GCA_023376895.1/
+│   │   │               └── GCA_023376895.1_ASM2337689v1_genomic.fna
+│   │   └── ... (other species)
+│   └── Metazoa.fa                    ← ORTHODB PROTEIN DATABASE
+├── Outputs/
+│   └── Preprocessing/
+│       ├── RepeatModeler/
+│       ├── RepeatMasker/
+│       ├── BRAKER/
+│       ├── BRAKER_UNMASKED/
+│       ├── BUSCO/
+│       └── BUSCO_UNMASKED/
+└── scripts/
+    └── preprocess_all.sh
+```
+
+## Download Genome Assemblies from NCBI
+
+You can download genomes using NCBI Datasets CLI or manually:
+
+### Option 1: Using NCBI Datasets CLI (Recommended)
+
+```bash
+# Install NCBI datasets CLI if not already installed
+conda install -c conda-forge ncbi-datasets-cli
+
+# Download a genome (example: Anabarilius grahami)
+datasets download genome accession GCA_003731715.1 \
+    --include genome \
+    --filename Anabarilius_grahami.zip
+
+# Extract to the correct location
+mkdir -p ./DB/GENOME_Comparison/Anabarilius_grahami/
+unzip Anabarilius_grahami.zip -d ./DB/GENOME_Comparison/Anabarilius_grahami/
+```
+
+### Option 2: Manual Download from NCBI
+
+1. Go to <https://www.ncbi.nlm.nih.gov/datasets/genome/>
+2. Search for the accession number (e.g., `GCA_003731715.1`)
+3. Download the genome assembly
+4. Extract and organize into the directory structure above
+
+### Complete Species Download Script
+
+Here's a script to download all 13 species:
+
+```bash
+#!/bin/bash
+# Download all genome assemblies
+
+SPECIES=(
+    "GCA_003731715.1:Anabarilius_grahami"
+    "GCA_023376895.1:Aspiorhynchus_laticeps"
+    "GCA_003368295.1:Carassius_auratus"
+    "GCF_018340385.1:Cyprinus_carpio"
+    "GCF_000002035.6:Danio_rerio"
+    "GCA_027564155.1:Gymnocypris_eckloni"
+    "GCA_022985175.1:Labeo_rohita"
+    "GCA_012432095.1:Onychostoma_macrolepis"
+    "GCA_003573665.1:Oxygymnocypris_stewartii"
+    "GCA_041051915.1:Schizothorax_macropogon"
+    "GCA_001515645.1:Sinocyclocheilus_grahami"
+    "GCA_029783895.1:Triplophysa_bombifrons"
+    "GCA_015846415.1:Triplophysa_dalaica"
+)
+
+for entry in "${SPECIES[@]}"; do
+    IFS=':' read -r accession species <<< "$entry"
+    echo "Downloading $species ($accession)..."
+
+    mkdir -p "./DB/GENOME_Comparison/$species"
+
+    datasets download genome accession "$accession" \
+        --include genome \
+        --filename "${species}.zip"
+
+    unzip -o "${species}.zip" -d "./DB/GENOME_Comparison/$species/"
+    rm "${species}.zip"
+done
+```
+
+> **Important**: Make sure each genome file is named `GCA_*_genomic.fna` or `GCF_*_genomic.fna`. Do **NOT** use `cds_from_genomic.fna` or `rna_from_genomic.fna` files - these are coding sequences only and will cause errors.
+
+## Download OrthoDB Protein Database
+
+The pipeline uses OrthoDB's Metazoa protein sequences for BRAKER annotation:
+
+```bash
+# Download Metazoa proteins from OrthoDB
+wget -P ./DB/ https://bioinf.uni-greifswald.de/bioinf/partitioned_odb12/Metazoa.fa.gz
+
+# Extract the file
+gunzip ./DB/Metazoa.fa.gz
+```
+
+Verify the download:
+
+```bash
+# Check file size (should be ~1.5 GB uncompressed)
+ls -lh ./DB/Metazoa.fa
+
+# Check number of sequences
+grep -c "^>" ./DB/Metazoa.fa
+```
+
+Expected: approximately 5-6 million protein sequences.
+
+## Create Output Directories
+
+The pipeline needs output directories to exist before running:
+
+```bash
+# Create all required output directories
+mkdir -p ./Outputs/Preprocessing/RepeatModeler/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+
+mkdir -p ./Outputs/Preprocessing/RepeatMasker/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+
+mkdir -p ./Outputs/Preprocessing/BRAKER/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+
+mkdir -p ./Outputs/Preprocessing/BRAKER_UNMASKED/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+
+mkdir -p ./Outputs/Preprocessing/BUSCO/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+
+mkdir -p ./Outputs/Preprocessing/BUSCO_UNMASKED/{Anabarilius_grahami,Aspiorhynchus_laticeps,Carassius_auratus,Cyprinus_carpio,Danio_rerio,Gymnocypris_eckloni,Labeo_rohita,Onychostoma_macrolepis,Oxygymnocypris_stewartii,Schizothorax_macropogon,Sinocyclocheilus_grahami,Triplophysa_bombifrons,Triplophysa_dalaica}
+```
+
+Or use this loop:
+
+```bash
+SPECIES=(
+    Anabarilius_grahami
+    Aspiorhynchus_laticeps
+    Carassius_auratus
+    Cyprinus_carpio
+    Danio_rerio
+    Gymnocypris_eckloni
+    Labeo_rohita
+    Onychostoma_macrolepis
+    Oxygymnocypris_stewartii
+    Schizothorax_macropogon
+    Sinocyclocheilus_grahami
+    Triplophysa_bombifrons
+    Triplophysa_dalaica
+)
+
+for sp in "${SPECIES[@]}"; do
+    mkdir -p "./Outputs/Preprocessing/RepeatModeler/$sp"
+    mkdir -p "./Outputs/Preprocessing/RepeatMasker/$sp"
+    mkdir -p "./Outputs/Preprocessing/BRAKER/$sp"
+    mkdir -p "./Outputs/Preprocessing/BRAKER_UNMASKED/$sp"
+    mkdir -p "./Outputs/Preprocessing/BUSCO/$sp"
+    mkdir -p "./Outputs/Preprocessing/BUSCO_UNMASKED/$sp"
+done
+```
+
+## Verify Input Files
+
+Before running the pipeline, verify all inputs are in place:
+
+```bash
+# Check genome files exist
+for sp in Anabarilius_grahami Aspiorhynchus_laticeps Carassius_auratus Cyprinus_carpio Danio_rerio Gymnocypris_eckloni Labeo_rohita Onychostoma_macrolepis Oxygymnocypris_stewartii Schizothorax_macropogon Sinocyclocheilus_grahami Triplophysa_bombifrons Triplophysa_dalaica; do
+    genome=$(find "./DB/GENOME_Comparison/$sp" -name "GC*_genomic.fna" 2>/dev/null | head -1)
+    if [ -n "$genome" ]; then
+        size=$(ls -lh "$genome" | awk '{print $5}')
+        echo "✓ $sp: $genome ($size)"
+    else
+        echo "✗ $sp: GENOME NOT FOUND!"
+    fi
+done
+
+# Check OrthoDB protein database
+if [ -f "./DB/Metazoa.fa" ]; then
+    echo "✓ OrthoDB Metazoa.fa found"
+else
+    echo "✗ OrthoDB Metazoa.fa NOT FOUND!"
+fi
+```
+
+---
+
+# Running the Pipeline
+
+## Understanding the Script Structure
+
+The `preprocess_all.sh` script contains commands organized by species. Each species section looks like:
+
+```bash
+# ============================================================
+# Species_name
+# ============================================================
+
+# 1_build_db                    - Create RepeatModeler database
+# 2_repeat_modeler              - Identify repeat families
+# 3_repeat_masker               - Mask repeats in genome
+# 4_braker                      - Gene annotation on masked genome
+# 4.5_braker_unmasked           - Gene annotation on unmasked genome
+# 5_copy_proteins               - Copy BRAKER's protein output (masked)
+# 5.5_copy_proteins_unmasked    - Copy BRAKER's protein output (unmasked)
+# 6_busco                       - Quality check on masked results
+# 6.5_busco_unmasked            - Quality check on unmasked results
+```
+
+## Running the Full Pipeline (One Species at a Time)
+
+### Option 1: Run All Species Sequentially
+
+Run the entire script (will take days to weeks):
+
+```bash
+cd /path/to/ComparativeGenomics4AL_Publication
+bash ./scripts/preprocess_all.sh
+```
+
+### Option 2: Run One Species at a Time
+
+Extract and run commands for a single species:
+
+```bash
+# Example: Run only Danio_rerio
+sed -n '/^# =.*Danio_rerio/,/^# =.*[A-Z]/p' ./scripts/preprocess_all.sh | head -n -2 | bash
+```
+
+Or create a single-species script:
+
+```bash
+# Create a script for Danio_rerio only
+cat > ./scripts/run_danio.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# 1_build_db
+conda run -n genome_annotation_env BuildDatabase -name ./Outputs/Preprocessing/RepeatModeler/Danio_rerio/Danio_rerio_db ./DB/GENOME_Comparison/Danio_rerio/ncbi_dataset/data/GCF_000002035.6/GCF_000002035.6_GRCz11_genomic.fna
+
+# 2_repeat_modeler
+conda run -n genome_annotation_env RepeatModeler -database ./Outputs/Preprocessing/RepeatModeler/Danio_rerio/Danio_rerio_db -threads 8 -engine ncbi
+
+# Continue with remaining steps...
+EOF
+
+chmod +x ./scripts/run_danio.sh
+./scripts/run_danio.sh
+```
+
+## Running Species in Parallel
+
+Since each species is independent, you can run multiple species simultaneously on different machines or using GNU Parallel.
+
+### Using GNU Parallel
+
+First, split the script into individual species scripts:
+
+```bash
+# Create a directory for individual species scripts
+mkdir -p ./scripts/species
+
+# Split the main script
+csplit -f ./scripts/species/species_ -b '%02d.sh' ./scripts/preprocess_all.sh '/^# =/' '{*}'
+
+# Make all scripts executable
+chmod +x ./scripts/species/*.sh
+
+# Run 3 species in parallel (adjust based on your system resources)
+ls ./scripts/species/species_*.sh | parallel -j 3 bash {}
+```
+
+### Using Screen/Tmux Sessions
+
+Run different species in separate terminal sessions:
+
+```bash
+# Terminal 1
+screen -S anabarilius
+bash -c 'sed -n "/Anabarilius_grahami/,/^# =/p" ./scripts/preprocess_all.sh | head -n -2 | bash'
+
+# Terminal 2
+screen -S danio
+bash -c 'sed -n "/Danio_rerio/,/^# =/p" ./scripts/preprocess_all.sh | head -n -2 | bash'
+
+# Detach with Ctrl+A, D
+# Reattach with: screen -r anabarilius
+```
+
+### Resource Considerations for Parallel Runs
+
+| Component | Per-Species Memory | Notes |
+|-----------|-------------------|-------|
+| RepeatModeler | 16-32 GB | CPU-intensive |
+| RepeatMasker | 8-16 GB | Parallelizable |
+| BRAKER | 32-64 GB | Memory-intensive |
+| BUSCO | 8-16 GB | Fast |
+
+**Recommended parallel runs**:
+
+- 64 GB RAM system: 1-2 species
+- 128 GB RAM system: 2-3 species
+- 256 GB RAM system: 4-6 species
+
+## Monitoring Progress
+
+### Check Running Processes
+
+```bash
+# See what's currently running
+ps aux | grep -E "(RepeatModeler|RepeatMasker|braker|busco)"
+
+# Monitor CPU and memory usage
+htop
+```
+
+### Check Output Files
+
+```bash
+# List all RepeatModeler results
+ls -la ./Outputs/Preprocessing/RepeatModeler/*/
+
+# List all BRAKER results
+ls -la ./Outputs/Preprocessing/BRAKER/*/braker.gff3
+
+# Count completed species
+find ./Outputs/Preprocessing/BUSCO -name "short_summary*.txt" | wc -l
+```
+
+---
+
+# Understanding Output Files
+
+## RepeatModeler Output
+
+### Directory Structure
+
+```
+./Outputs/Preprocessing/RepeatModeler/{species}/
+├── {species}_db-families.fa    # Consensus repeat sequences
+├── {species}_db-families.stk   # Stockholm alignments
+└── RM_*/                       # Working directory with logs
+```
+
+### Expected Console Output
+
+A successful RepeatModeler run progresses through several stages: self-comparison, RECON family clustering, RepeatScout pattern discovery, and RepeatClassifier annotation. Here's example output from the final stages:
+
+```
+      100% completed,  00:0:00 (hh:mm:ss) est. time remaining.
+Comparison Time: 25:58:44 (hh:mm:ss) Elapsed Time, 1030112 HSPs Collected
+  - RECON: Running imagespread..
+RECON Elapsed: 00:00:01 (hh:mm:ss) Elapsed Time
+  - RECON: Running initial definition of elements ( eledef )..
+RECON Elapsed: 00:00:08 (hh:mm:ss) Elapsed Time
+  - RECON: Running re-definition of elements ( eleredef )..
+RECON Elapsed: 00:00:52 (hh:mm:ss) Elapsed Time
+  - RECON: Running re-definition of edges ( edgeredef )..
+RECON Elapsed: 00:15:29 (hh:mm:ss) Elapsed Time
+  - RECON: Running family definition ( famdef )..
+RECON Elapsed: 00:00:03 (hh:mm:ss) Elapsed Time
+  - Obtaining element sequences
+Number of families returned by RECON: 41126
+Processing families with greater than 15 elements
+Instance Gathering: 00:00:04 (hh:mm:ss) Elapsed Time
+Refining 1077 families
+Family Refinement: 00:08:43 (hh:mm:ss) Elapsed Time
+Round Time: 26:59:50 (hh:mm:ss) Elapsed Time : 1019 families discovered.
+
+RepeatScout/RECON discovery complete: 2086 families found
+
+
+#
+# RepeatClassifier
+#
+# Version 2.0.7
+# Threads: 8
+# Current Working Directory: /home/jovyan/RM_891007.WedDec171442462025
+# Protein Library: /opt/conda/envs/genome_annotation_env/share/RepeatMasker/Libraries/RepeatPeps.lib
+#   - 18011 proteins
+# Consensi Library: /opt/conda/envs/genome_annotation_env/share/RepeatMasker/Libraries/RepeatMasker.lib
+#   - 237 consensus sequences
+# !!!! WARNING !!!! -- The curated TE consensus library does not appear to be complete.
+#                      This may result in poor clasification performance.  Please
+#                      ensure that you have the latest version of RepeatMasker
+#                      installed and that you have installed the complete set of Dfam
+#                      partitions.
+  - Looking for simple/tandem and low complexity sequences..
+  - Looking for similarity to known repeat proteins..
+  - Looking for similarity to known repeat consensi..
+
+Classification Time: 00:05:14 (hh:mm:ss) Elapsed Time
+
+
+Program Time: 31:12:32 (hh:mm:ss) Elapsed Time
+Working directory:  /home/jovyan/RM_891007.WedDec171442462025
+may be deleted unless there were problems with the run.
+
+The results have been saved to:
+  /home/jovyan/Outputs/Preprocessing/RepeatModeler/Triplophysa_dalaica/
+    Triplophysa_dalaica_db-families.fa  - Consensus sequences for each family identified.
+    Triplophysa_dalaica_db-families.stk - Seed alignments for each family identified.
+    Triplophysa_dalaica_db-rmod.log     - Execution log.  Useful for reproducing results.
+```
+
+> **Note**: RepeatModeler typically takes 24-48 hours for fish genomes (~1 Gb). The example above completed in ~31 hours for *Triplophysa dalaica*.
+
+### Understanding RepeatModeler Stages
+
+| Stage | Description | Typical Duration |
+|-------|-------------|------------------|
+| **Comparison** | Self-alignment of genome to find repeat copies | 20-30 hours |
+| **RECON** | Clusters similar sequences into repeat families | 15-30 minutes |
+| **RepeatScout** | Pattern-based repeat discovery (runs in parallel) | Included in round time |
+| **RepeatClassifier** | Annotates families using protein/consensus libraries | 5-15 minutes |
+
+### Common Warnings
+
+The **"curated TE consensus library does not appear to be complete"** warning is common and usually not critical. It indicates that only Dfam's core library is installed, not all species-specific partitions. For fish genomes, this is typically acceptable because:
+
+1. RepeatModeler performs *de novo* discovery (doesn't rely solely on known repeats)
+2. The protein library (18,011 proteins) provides good classification coverage
+3. Fish-specific repeats will be discovered regardless of library completeness
+
+To suppress this warning (optional), install additional Dfam partitions:
+
+```bash
+# Download additional Dfam partitions (large download, ~15 GB total)
+conda run -n genome_annotation_env RepeatMasker -h  # Shows library location
+cd /path/to/RepeatMasker/Libraries/
+# Follow Dfam installation instructions at https://www.dfam.org/releases/current/
+```
+
+### Key Output Files
+
+| File | Description | Usage |
+|------|-------------|-------|
+| `{species}_db-families.fa` | **Consensus sequences** for all repeat families | Input for RepeatMasker |
+| `{species}_db-families.stk` | Stockholm-format seed alignments | Dfam submission, curation |
+| `{species}_db-rmod.log` | Complete execution log | Reproducibility, debugging |
+
+> **Important**: Keep all three output files for reproducibility and potential database submission to Dfam.
+
+## RepeatMasker Output
+
+### Directory Structure
+
+```
+./Outputs/Preprocessing/RepeatMasker/{species}/
+├── *.fna.masked               # Softmasked genome (lowercase)
+├── *.fna.out                  # RepeatMasker annotations
+├── *.fna.tbl                  # Summary table
+└── *.fna.align                # Alignments to repeat consensus
+```
+
+### Expected Console Output
+
+RepeatMasker processes the genome in batches, first identifying simple repeats and then searching for matches against the custom repeat library created by RepeatModeler. Here's example output from a successful run:
+
+```bash
+Checking for E. coli insertion elements
+identifying Simple Repeats in batch 17360 of 17362
+identifying Simple Repeats in batch 17362 of 17362
+identifying Simple Repeats in batch 17361 of 17362
+identifying matches to Anabarilius_grahami_db-families.fa sequences in batch 17362 of 17362
+identifying Simple Repeats in batch 17362 of 17362
+
+
+ProcessRepeats: Adjudicating alignments
+.................................................................................................................
+[many more dots indicating progress]
+.................................................................................................................
+ProcessRepeats: Masking sequences
+
+ProcessRepeats: Generating table output
+
+done
+```
+
+> **Note**: The "Checking for E. coli insertion elements" message is a standard quality control step and appears for all genomes, regardless of organism. The batch numbers will vary based on genome size and the `-pa` (parallel) setting.
+
+### Understanding RepeatMasker Stages
+
+| Stage | Description | Output |
+|-------|-------------|--------|
+| **E. coli check** | Quality control for contamination | Warnings if found |
+| **Simple Repeats** | Identifies microsatellites and low-complexity regions | Included in `.out` file |
+| **Library matching** | Searches for repeat family matches | Uses RepeatModeler output |
+| **Adjudicating alignments** | Resolves overlapping repeat annotations | Progress dots |
+| **Masking sequences** | Softmasks repeats (lowercase) | Creates `.masked` file |
+| **Generating table output** | Creates summary statistics | Creates `.tbl` file |
+
+### Key Output Files
+
+| File | Description | Usage |
+|------|-------------|-------|
+| `*.fna.masked` | **Softmasked genome** (repeats in lowercase) | Input for BRAKER gene annotation |
+| `*.fna.out` | Detailed repeat annotations (position, type, score) | Repeat content analysis |
+| `*.fna.tbl` | Summary table with repeat statistics | Quick overview of repeat content |
+| `*.fna.align` | Alignments between genome and repeat consensus | Detailed repeat investigation |
+
+> **Tip**: The `.tbl` file provides a quick summary of repeat content by class (SINEs, LINEs, DNA transposons, etc.). This is useful for comparing repeat landscapes across species.
+
+## BRAKER Output
+
+BRAKER3 combines GeneMark-ETP and AUGUSTUS to produce high-quality gene annotations. The pipeline generates numerous intermediate files and final annotation products.
+
+### Expected Console Output
+
+During a successful BRAKER run, you'll see progress messages with timestamps. The final stages show ProtHint completion:
+
+```bash
+[Mon Dec 15 07:11:52 2025] Alignment of pairs finished
+[Mon Dec 15 07:11:52 2025] Translating coordinates from local pair
+level to contig level
+[Mon Dec 15 07:12:23 2025] Finished spliced alignment
+[Mon Dec 15 07:12:24 2025] Flagging top chains
+[Mon Dec 15 07:13:09 2025] Processing the output
+[Mon Dec 15 07:14:57 2025] Output processed
+[Mon Dec 15 07:14:57 2025] ProtHint finished.
+```
+
+> **Note**: BRAKER runs can take from several hours to days depending on genome size, complexity, and available computational resources. The timestamps help track progress through different stages: protein alignment, coordinate mapping, chain selection, and final processing.
+
+<!-- TODO: Add examples of earlier BRAKER console output stages (GeneMark training, AUGUSTUS prediction, etc.) -->
+
+### Complete Output Directory Structure
+
+After a successful BRAKER run, the output directory will contain the following structure:
+
+```
+./Outputs/Preprocessing/BRAKER/Anabarilius_grahami/
+├── Augustus/                           # AUGUSTUS intermediate files
+│   └── [various prediction files]
+├── braker.aa                           # Protein sequences (~15-25 MB)
+├── braker.codingseq                    # Coding sequences (~45-75 MB)
+├── braker.gff3                         # Gene annotations in GFF3 (~5-15 MB)
+├── braker.gtf                          # Gene annotations in GTF (~5-15 MB)
+├── braker.log                          # Main log file (~1-5 MB)
+├── errors/                             # Standard error logs
+│   ├── aa2nonred.stderr
+│   ├── getAnnoFastaFromJoingenes.augustus.hints_hints.stderr
+│   ├── getAnnoFastaFromJoingenes.augustus.hints_tmp.stderr
+│   └── getAnnoFastaFromJoingenes.braker_.stderr
+├── GeneMark-EP/                        # GeneMark-EP predictions with protein hints
+│   ├── genemark.f.multi_anchored.gtf   # Multi-exon genes with protein support
+│   ├── genemark.f.single_anchored.gtf  # Single-exon genes with protein support
+│   ├── genemark.gtf                    # All GeneMark predictions
+│   └── gmhmm.mod                       # GeneMark HMM model
+├── GeneMark-ES/                        # GeneMark self-training predictions
+│   ├── genemark.gtf                    # GeneMark ES predictions
+│   └── gmhmm.mod                       # GeneMark ES model
+├── genome_header.map                   # Chromosome/scaffold name mapping
+├── hintsfile.gff                       # Combined evidence hints (~10-30 MB)
+├── prothint.gff                        # Protein alignment hints (~8-25 MB)
+├── species/                            # AUGUSTUS training parameters
+│   └── Anabarilius_grahami/
+│       ├── Anabarilius_grahami_exon_probs.pbl
+│       ├── Anabarilius_grahami_igenic_probs.pbl
+│       ├── Anabarilius_grahami_intron_probs.pbl
+│       ├── Anabarilius_grahami_metapars.cfg
+│       ├── Anabarilius_grahami_metapars.cgp.cfg
+│       ├── Anabarilius_grahami_metapars.utr.cfg
+│       ├── Anabarilius_grahami_parameters.cfg
+│       ├── Anabarilius_grahami_parameters.cfg.orig1
+│       ├── Anabarilius_grahami_weightmatrix.txt
+│       └── ex1.cfg
+└── what-to-cite.txt                    # Citation information
+
+8 directories, 29+ files
+```
+
+> **Note**: File sizes shown are approximate ranges for fish genomes of 0.5-3 Gb. Actual sizes will vary based on genome size, repeat content, and gene density.
+
+### Key Output Files
+
+The most important output files for downstream analyses are:
+
+| File | Description | Usage |
+|------|-------------|-------|
+| `braker.gff3` | **Primary annotation file** in GFF3 format | Genome browsers, synteny analysis, functional annotation |
+| `braker.gtf` | Gene annotations in GTF format | Alternative format for some tools |
+| `braker.aa` | **Protein sequences** for all predicted genes ⭐ | **Used directly by the pipeline** - OrthoFinder, BUSCO, functional annotation |
+| `braker.codingseq` | Coding DNA sequences (CDS) | Codon usage analysis, phylogenetics |
+| `hintsfile.gff` | Combined evidence from all sources | Understanding prediction confidence |
+| `prothint.gff` | Protein alignment evidence | Evaluating protein support |
+| `braker.log` | Complete execution log | Troubleshooting, method verification |
+| `what-to-cite.txt` | Tools and versions used | Methods section, reproducibility |
+
+> **Important**: The pipeline copies `braker.aa` to `{species}_proteins.faa` for consistent naming. BRAKER generates these proteins internally, so no separate extraction step (like gffread) is needed. This also avoids sequence ID mismatch issues.
+
+### Understanding Subdirectories
+
+- **`Augustus/`**: Contains AUGUSTUS gene prediction intermediate files and working data
+- **`GeneMark-EP/`**: GeneMark predictions using protein evidence (EP = Evidence-based with Proteins)
+  - `genemark.f.multi_anchored.gtf` - Multi-exon genes with strong protein support
+  - `genemark.f.single_anchored.gtf` - Single-exon genes with protein support
+- **`GeneMark-ES/`**: GeneMark self-training predictions (ES = self-training mode)
+- **`species/{species_name}/`**: AUGUSTUS species-specific parameters trained on your genome
+  - Includes probability distributions for exons, introns, and intergenic regions
+  - Parameter files (`.cfg`) define the gene structure model
+  - These can be reused for closely related species
+- **`errors/`**: Standard error output from various pipeline stages
+  - **Important**: The presence of `.stderr` files does NOT necessarily indicate failure
+  - Many tools write informational messages to stderr
+  - Check these files only if BRAKER reports an error or produces unexpected results
+
+## BUSCO Output
+
+### Directory Structure
+
+```
+./Outputs/Preprocessing/BUSCO/{species}/
+└── {species}_busco/
+    ├── short_summary.specific.actinopterygii_odb12.{species}_busco.txt
+    ├── full_table.tsv         # Detailed BUSCO results
+    └── missing_busco_list.tsv # List of missing BUSCOs
+```
+
+### Expected Console Output
+
+A successful BUSCO run will show progress through HMMER searches and then display results:
+
+```bash
+2025-12-18 07:06:29 INFO:       ***** Start a BUSCO v6.0.0 analysis *****
+2025-12-18 07:06:29 INFO:       Running proteins mode
+2025-12-18 07:06:33 INFO:       Input file is .../braker.aa
+2025-12-18 07:07:49 INFO:       Running BUSCO using lineage dataset actinopterygii_odb12 (eukaryota, 2025-07-01)
+2025-12-18 07:07:49 INFO:       ***** Run HMMER on gene sequences *****
+2025-12-18 07:07:49 INFO:       Running 7207 job(s) on hmmsearch, starting at 12/18/2025 07:07:49
+2025-12-18 07:14:59 INFO:       [hmmsearch]     721 of 7207 task(s) completed
+...
+2025-12-18 08:56:56 INFO:       [hmmsearch]     7207 of 7207 task(s) completed
+2025-12-18 08:57:39 INFO:
+
+    ---------------------------------------------------
+    |Results from dataset actinopterygii_odb12         |
+    ---------------------------------------------------
+    |C:89.3%[S:77.6%,D:11.6%],F:5.9%,M:4.8%,n:7207     |
+    |6434    Complete BUSCOs (C)                       |
+    |5596    Complete and single-copy BUSCOs (S)       |
+    |838     Complete and duplicated BUSCOs (D)        |
+    |426     Fragmented BUSCOs (F)                     |
+    |347     Missing BUSCOs (M)                        |
+    |7207    Total BUSCO groups searched               |
+    ---------------------------------------------------
+
+2025-12-18 08:57:39 INFO:       BUSCO analysis done. Total running time: 6666 seconds
+2025-12-18 08:57:39 INFO:       Results written in .../Anabarilius_grahami_busco
+```
+
+> **Note**: BUSCO analysis typically takes 1-2 hours per species for fish proteomes. The HMMER search is the most time-consuming step.
+
+### Interpreting BUSCO Results
+
+| Metric | Description | Target |
+|--------|-------------|--------|
+| **C** (Complete) | BUSCOs found completely | > 85% |
+| **S** (Single-copy) | Complete BUSCOs found once | High is good |
+| **D** (Duplicated) | Complete BUSCOs found multiple times | May indicate WGD or assembly issues |
+| **F** (Fragmented) | Partially found BUSCOs | < 10% |
+| **M** (Missing) | Not found at all | < 10% |
+
+**Quality Assessment Guidelines:**
+
+| Score | Interpretation |
+|-------|----------------|
+| C > 95% | Excellent - publication quality |
+| C > 90% | Good - suitable for most analyses |
+| C > 85% | Acceptable - may miss some gene families |
+| C > 80% | Fair - consider improving annotation |
+| C < 80% | Poor - check genome assembly and annotation |
+
+> **Tip**: High duplication rates (D > 15%) in fish may indicate whole-genome duplication events common in teleosts, not necessarily assembly errors.
+
+## Comparing Masked vs Unmasked Results
+
+The pipeline runs BRAKER on both masked and unmasked genomes to allow comparison:
+
+| Directory | Description | Expected Quality |
+|-----------|-------------|------------------|
+| `BRAKER/` | Masked genome results | Higher quality (recommended) |
+| `BRAKER_UNMASKED/` | Unmasked genome results | May have more false positives |
+
+Compare BUSCO scores to see the effect of repeat masking:
+
+```bash
+# Compare BUSCO scores
+for sp in Danio_rerio Cyprinus_carpio; do
+    echo "=== $sp ==="
+    echo "Masked:"
+    grep "C:" ./Outputs/Preprocessing/BUSCO/$sp/*/short_summary*.txt
+    echo "Unmasked:"
+    grep "C:" ./Outputs/Preprocessing/BUSCO_UNMASKED/$sp/*/short_summary*.txt
+done
+```
+
+---
+
+# Troubleshooting
+
+## Common Errors
+
+### RepeatMasker: FastaDB Errors
+
+**Error Message**:
+```
+FastaDB:_cleanIndexAndCompact - ERROR: Multiple fasta seqs appear on one line
+```
+
+**Cause**: You're using a CDS file (`cds_from_genomic.fna`) instead of the genome assembly.
+
+**Solution**: Use the correct genome file (`GCA_*_genomic.fna` or `GCF_*_genomic.fna`).
+
+### RepeatMasker: "Checking for E. coli insertion elements"
+
+**Message**:
+```
+Checking for E. coli insertion elements...
+```
+
+**This is NOT an error!** RepeatMasker checks all genomes for potential E. coli contamination as part of its quality control. This message appears even for fish genomes and can be safely ignored.
+
+### BRAKER: GeneMark Not Found
+
+**Error Message**:
+```
+GeneMark-ES/ET/EP/ETP not found
+```
+
+**Solution**: Set the GeneMark path:
+
+```bash
+export GENEMARK_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"
+```
+
+### BRAKER: AUGUSTUS Config Not Writable
+
+**Error Message**:
+```
+Cannot write to AUGUSTUS config directory
+```
+
+**Solution**: Copy the AUGUSTUS config to a writable location:
+
+```bash
+# Get the conda AUGUSTUS config path
+AUGUSTUS_CONFIG=$(conda run -n braker3_env bash -c 'echo $AUGUSTUS_CONFIG_PATH')
+
+# Copy to a writable location
+cp -r $AUGUSTUS_CONFIG ./augustus_config
+export AUGUSTUS_CONFIG_PATH="$(pwd)/augustus_config"
+```
+
+### BUSCO: Lineage Dataset Not Found
+
+**Error Message**:
+```
+No datasets available
+```
+
+**Solution**: Download the lineage dataset manually:
+
+```bash
+conda run -n genome_annotation_env busco --download actinopterygii_odb12
+```
+
+### gffread: "couldn't find fasta record" Error
+
+**Error Message**:
+```
+Warning: couldn't find fasta record for 'RJVU01000001.1_Anabarilius_grahami_isolate_AG-KIZ_scaffold100002_cov130,_whole_genome_shotgun_sequence'!
+Error: no genomic sequence available (check -g option!).
+```
+
+**Cause**: BRAKER/AUGUSTUS modifies sequence names internally by replacing spaces with underscores. The GFF3 file uses these modified names, but the original FASTA file has the original names with spaces.
+
+**Solution**: Use BRAKER's built-in protein output (`braker.aa`) instead of gffread extraction:
+
+```bash
+# DON'T use gffread (ID mismatch issues)
+# gffread -g genome.fna -y proteins.faa braker.gff3
+
+# DO use BRAKER's direct output
+cp ./Outputs/Preprocessing/BRAKER/{species}/braker.aa ./Outputs/Preprocessing/BRAKER/{species}/{species}_proteins.faa
+```
+
+> **Note**: The `preprocess_all.sh` script has been updated to use this approach automatically. BRAKER generates `braker.aa` internally using its own sequence ID mapping, avoiding the mismatch problem entirely.
+
+## Performance Tips
+
+1. **Use SSDs**: RepeatModeler and BRAKER write many temporary files; SSDs significantly improve performance.
+
+2. **Adjust Thread Count**: Modify `-threads` or `-pa` parameters based on your system:
+   ```bash
+   # Edit the script to use more threads
+   sed -i 's/-threads 8/-threads 16/g' ./scripts/preprocess_all.sh
+   sed -i 's/-pa 8/-pa 16/g' ./scripts/preprocess_all.sh
+   ```
+
+3. **Use Tmpdir on Fast Storage**: Set TMPDIR to fast storage:
+   ```bash
+   export TMPDIR=/fast/ssd/tmp
+   ```
+
+4. **Monitor Disk Space**: Large genomes can produce 50+ GB of intermediate files per species:
+   ```bash
+   df -h ./Outputs/
+   ```
+
+---
+
+# Next Steps
+
+After completing the preprocessing pipeline, your annotated genomes are ready for downstream analyses:
+
+1. **Ortholog Analysis**: Use the protein files with OrthoFinder for comparative genomics
+2. **Synteny Analysis**: Use the GFF3 files with MCScanX for synteny detection
+3. **Functional Annotation**: Annotate proteins with InterProScan or eggNOG-mapper
+4. **Phylogenetic Analysis**: Use single-copy orthologs for species tree reconstruction
+
+See the other notebooks in this project for these downstream analyses:
+- `Notebooks/2-ultimate-AL_OrthoFinder.qmd` - Ortholog identification
+- `Notebooks/6-ultimate-MCScanX.qmd` - Synteny analysis
+
+<!-- --- -->
+<!---->
+<!-- # References -->
+<!---->
+<!-- - RepeatModeler: <https://www.repeatmasker.org/RepeatModeler/> -->
+<!-- - RepeatMasker: <https://www.repeatmasker.org/> -->
+<!-- - BRAKER3: <https://github.com/Gaius-Augustus/BRAKER> -->
+<!-- - BUSCO: <https://busco.ezlab.org/> -->
+<!-- - OrthoDB: <https://www.orthodb.org/> -->
+<!-- - NCBI Datasets: <https://www.ncbi.nlm.nih.gov/datasets/> -->

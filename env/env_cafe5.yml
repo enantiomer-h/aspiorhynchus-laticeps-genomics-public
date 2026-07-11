@@ -1,0 +1,35 @@
+# CAFE5 Environment for Gene Family Evolution Analysis
+#
+# This environment provides CAFE5 for analyzing gene family expansion
+# and contraction across phylogenetic trees.
+#
+# Installation:
+#   mamba env create -f env_cafe5.yml
+#   conda activate cafe5_env
+#
+# Usage:
+#   cafe5 -i gene_counts.tsv -t ultrametric_tree.tre -o output_dir -p
+#
+# Reference:
+#   Mendes FK, Vanderpool D, Fulton B, Hahn MW.
+#   CAFE 5 models variation in evolutionary rates among gene families.
+#   Bioinformatics. 2020;36(22-23):5516-5518.
+
+name: cafe5_env
+
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Core CAFE5 tool
+  - cafe=5.1.0
+
+  # Python support
+  - python>=3.8
+  - pip
+
+  # Data processing utilities
+  - pandas
+  - numpy

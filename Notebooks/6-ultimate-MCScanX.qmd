@@ -51,19 +51,55 @@ This notebook provides a comprehensive workflow for synteny analysis using MCSca
 ```{python}
 # System verification and environment setup
 import os
+import re
 import sys
 from pathlib import Path
 
 # Check Python environment
 print("Python executable:", sys.executable)
 print("Working directory:", os.getcwd())
+```
+
+### Load Configuration
+
+```{python}
+# Load centralized path configuration
+import sys
+sys.path.insert(0, './Notebooks/config')
+from load_config import (load_paths, get_path, get_version, get_focal_species,
+                         get_focal_abbreviation, get_focal_mcscanx_prefix,
+                         get_mcscanx_comparisons, get_focal_display_name)
+
+# Display configuration summary
+print(f"Configuration loaded: OrthoFinder Results_{get_version()}")
+
+# Define commonly used paths for this notebook
+ORTHOGROUPS_TSV = get_path('orthofinder.orthogroups_tsv')
+CAFE_FAMILY_RESULTS = get_path('cafe.single_lambda.family_results')
+CAFE_CHANGE_TAB = get_path('cafe.single_lambda.change_tab')
+FOCAL_SPECIES = get_focal_species()
+
+# Database and output paths from config
+BRAKER_BASE = get_path('cds.masked_dir') or get_path('cds.base_dir')
+BLAST_DB = get_path('database.blast_db')
+MCSCANX_DB = get_path('database.mcscanx_db')
+BLASTP_OUTPUT = get_path('outputs.blastp')
+MCSCANX_RESULTS = get_path('outputs.mcscanx_results')
+OUTPUT_FIGURES = get_path('outputs.figures')
+
+# MCScanX comparison pairs from config
+mcscanx_comparisons = get_mcscanx_comparisons()
+comparison_names = [c['name'] for c in mcscanx_comparisons]
+
+print(f"OrthoFinder orthogroups: {ORTHOGROUPS_TSV}")
+print(f"CAFE results: {CAFE_FAMILY_RESULTS}")
+print(f"MCScanX comparisons: {comparison_names}")
 
 # Create necessary output directories
-os.makedirs("./DB/BlastDB", exist_ok=True)
-os.makedirs("./DB/MCScanX", exist_ok=True)
-os.makedirs("./Outputs/Blastp", exist_ok=True)
-os.makedirs("./Outputs/MCScanX_Results", exist_ok=True)
-
+os.makedirs(BLAST_DB, exist_ok=True)
+os.makedirs(MCSCANX_DB, exist_ok=True)
+os.makedirs(BLASTP_OUTPUT, exist_ok=True)
+os.makedirs(MCSCANX_RESULTS, exist_ok=True)
 print("\nDirectory structure created successfully")
 ```
 
@@ -73,13 +109,14 @@ print("\nDirectory structure created successfully")
 
 ```{python}
 # Verify availability of input protein sequence files
-protein_files = [
-    "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa",
-    "./DB/GENOME_Comparison/FAA/Schizothorax_macropogon.faa", 
-    "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
-]
+# Using BRAKER3 preprocessing outputs (consistent with rest of pipeline)
+# BRAKER_BASE loaded from config above
 
-print("Protein sequence file verification:")
+protein_files = [f"{BRAKER_BASE}/{FOCAL_SPECIES}/braker.aa"]
+for comp in mcscanx_comparisons:
+    protein_files.append(f"{BRAKER_BASE}/{comp['comp_species']}/braker.aa")
+
+print("Protein sequence file verification (from BRAKER3 preprocessing):")
 for file_path in protein_files:
     if os.path.exists(file_path):
         size = os.path.getsize(file_path) / (1024*1024)  # Size in MB
@@ -92,21 +129,24 @@ for file_path in protein_files:
 
 ```{python}
 # Verify annotation files for positional information
-annotation_files = [
-    "./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3",
-    "./DB/GENOME_Comparison/Schizothorax_macropogon/LF.bestGeneModels.gff3",
-    "./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3"
-]
+# Using BRAKER3 GFF3 outputs (consistent with protein files above)
+annotation_files = [f"{BRAKER_BASE}/{FOCAL_SPECIES}/braker.gff3"]
+for comp in mcscanx_comparisons:
+    annotation_files.append(f"{BRAKER_BASE}/{comp['comp_species']}/braker.gff3")
 
-print("\nAnnotation file verification:")
+print("\nAnnotation file verification (from BRAKER3 preprocessing):")
 for file_path in annotation_files:
     if os.path.exists(file_path):
-        print(f"✓ {file_path}")
-        # Show first few non-comment lines
+        size_mb = os.path.getsize(file_path) / (1024*1024)
+        print(f"✓ {file_path} ({size_mb:.1f} MB)")
+        # Show first few gene lines to verify format
         with open(file_path, 'r') as f:
-            lines = [line for line in f if not line.startswith('#')][:3]
-            for i, line in enumerate(lines, 1):
-                print(f"    Line {i}: {line[:80].strip()}...")
+            gene_lines = [line for line in f if '\tgene\t' in line][:2]
+            for i, line in enumerate(gene_lines, 1):
+                parts = line.strip().split('\t')
+                chrom = parts[0][:50] + "..." if len(parts[0]) > 50 else parts[0]
+                gene_id = parts[8].split(';')[0] if len(parts) > 8 else "N/A"
+                print(f"    Gene {i}: {chrom} | {gene_id}")
     else:
         print(f"✗ {file_path} (NOT FOUND)")
     print()
@@ -120,47 +160,62 @@ for file_path in annotation_files:
 def create_pairwise_datasets():
     """
     Create combined protein datasets for pairwise synteny analysis.
-    
+
     This function combines protein sequences from pairs of species
     to enable comprehensive BLAST searches for synteny detection.
+
+    IMPORTANT: Adds species prefix to sequence headers to ensure globally
+    unique gene IDs. BRAKER3 outputs use sequential numbering (g1, g2, ...)
+    per species, so without prefixes, both species would have g1, g2, etc.
+    causing MCScanX to fail with 0 matches imported.
+
+    Format conversion: >g1.t1 -> >al_g1.t1 (for AL species)
+
+    Note: Uses BRAKER3 preprocessing outputs (braker.aa) for consistency
+    with the rest of the pipeline.
     """
-    
+
     print("Creating pairwise protein datasets...")
-    
-    # Define pairwise comparisons
-    comparisons = {
-        'al_sm': [
-            "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa",
-            "./DB/GENOME_Comparison/FAA/Schizothorax_macropogon.faa"
-        ],
-        'al_tb': [
-            "./DB/GENOME_Comparison/FAA/Aspiorhynchus_laticeps.faa", 
-            "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
+    print(f"Using BRAKER3 outputs from: {BRAKER_BASE}")
+
+    # Define pairwise comparisons using BRAKER3 outputs (from config)
+    # Format: (input_file, species_prefix)
+    comparisons = {}
+    for comp in mcscanx_comparisons:
+        comparisons[comp['name']] = [
+            (f"{BRAKER_BASE}/{comp['focal_species']}/braker.aa", comp['focal_prefix']),
+            (f"{BRAKER_BASE}/{comp['comp_species']}/braker.aa", comp['comp_prefix'])
         ]
-    }
-    
+
     for comparison_name, file_list in comparisons.items():
-        output_file = f"./DB/BlastDB/{comparison_name}.faa"
-        
+        output_file = f"{BLAST_DB}/{comparison_name}.faa"
+
         print(f"\nCreating {comparison_name} dataset...")
-        
+
         with open(output_file, 'w') as outfile:
-            for input_file in file_list:
+            for input_file, species_prefix in file_list:
                 if os.path.exists(input_file):
+                    seq_count = 0
                     with open(input_file, 'r') as infile:
-                        content = infile.read()
-                        outfile.write(content)
-                    
-                    species = Path(input_file).stem
+                        for line in infile:
+                            if line.startswith('>'):
+                                # Add species prefix to header: >g1.t1 -> >al_g1.t1
+                                header = line[1:].strip()  # Remove '>' and newline
+                                outfile.write(f">{species_prefix}_{header}\n")
+                                seq_count += 1
+                            else:
+                                outfile.write(line)
+
                     size = os.path.getsize(input_file) / (1024*1024)
-                    print(f"  Added {species}: {size:.1f} MB")
+                    print(f"  Added {species_prefix.upper()}: {seq_count:,} sequences ({size:.1f} MB)")
+                    print(f"    Header format: >g1.t1 -> >{species_prefix}_g1.t1")
                 else:
                     print(f"  WARNING: {input_file} not found")
-        
+
         final_size = os.path.getsize(output_file) / (1024*1024)
         print(f"  Final {comparison_name}.faa: {final_size:.1f} MB")
-    
-    print("\nPairwise datasets created successfully")
+
+    print("\nPairwise datasets created with species-prefixed gene IDs")
 
 # Execute dataset creation
 create_pairwise_datasets()
@@ -172,23 +227,28 @@ create_pairwise_datasets()
 def create_blast_databases():
     """
     Create BLAST protein databases for synteny analysis.
-    
+
     Uses NCBI BLAST+ makeblastdb to create searchable databases
     from the combined protein sequence files.
+
+    Note: We do NOT use -parse_seqids because BRAKER3 outputs use simple
+    headers (>g1.t1) that don't follow NCBI's SeqID format requirements.
+    This is fine for MCScanX which only needs sequence alignment results.
     """
-    
+
     print("Creating BLAST databases...")
-    
-    datasets = ['al_sm', 'al_tb']
+
+    datasets = comparison_names
     blast_cmd = "./Apps/Blast/ncbi-blast-2.16.0+/bin/makeblastdb"
-    
+
     for dataset in datasets:
-        input_file = f"./DB/BlastDB/{dataset}.faa"
-        output_prefix = f"./DB/BlastDB/{dataset}"
-        log_file = f"./DB/BlastDB/{dataset}.log"
-        
+        input_file = f"{BLAST_DB}/{dataset}.faa"
+        output_prefix = f"{BLAST_DB}/{dataset}"
+        log_file = f"{BLAST_DB}/{dataset}.log"
+
         if os.path.exists(input_file):
-            cmd = f"{blast_cmd} -in {input_file} -dbtype prot -parse_seqids -out {output_prefix} -logfile {log_file} -title {dataset}"
+            # Note: -parse_seqids removed - not compatible with BRAKER3 simple headers
+            cmd = f"{blast_cmd} -in {input_file} -dbtype prot -out {output_prefix} -logfile {log_file} -title {dataset}"
             
             print(f"Building database for {dataset}...")
             print(f"Command: {cmd}")
@@ -228,13 +288,13 @@ def run_blast_searches():
     
     print("Starting BLAST searches...")
     
-    datasets = ['al_sm', 'al_tb']
+    datasets = comparison_names
     blast_cmd = "./Apps/Blast/ncbi-blast-2.16.0+/bin/blastp"
     
     for dataset in datasets:
-        query_file = f"./DB/BlastDB/{dataset}.faa"
-        db_path = f"./DB/BlastDB/{dataset}"
-        output_file = f"./Outputs/Blastp/{dataset}.blast"
+        query_file = f"{BLAST_DB}/{dataset}.faa"
+        db_path = f"{BLAST_DB}/{dataset}"
+        output_file = f"{BLASTP_OUTPUT}/{dataset}.blast"
         
         if os.path.exists(query_file) and os.path.exists(f"{db_path}.pin"):
             cmd = f"{blast_cmd} -query {query_file} -db {db_path} -out {output_file} -evalue 1e-10 -num_threads 8 -outfmt 6 -num_alignments 5"
@@ -352,28 +412,30 @@ def convert_gff3_to_bed(gff3_path, bed_path):
 def prepare_annotation_files():
     """
     Prepare all annotation files for MCScanX analysis.
+
+    Uses BRAKER3 GFF3 outputs which have standardized gene IDs (g1, g2, etc.)
+    matching the protein IDs in braker.aa files.
     """
-    
+
     print("=== Preparing Annotation Files ===\n")
-    
+    print(f"Using BRAKER3 GFF3 outputs from: {BRAKER_BASE}")
+
     # Create directories for each comparison
-    os.makedirs("./DB/MCScanX/al_sm", exist_ok=True)
-    os.makedirs("./DB/MCScanX/al_tb", exist_ok=True)
-    
-    # Define conversion tasks
-    conversions = [
-        # For AL-SM comparison
-        ("./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3", 
-         "./DB/MCScanX/al_sm/al.bed"),
-        ("./DB/GENOME_Comparison/Schizothorax_macropogon/LF.bestGeneModels.gff3", 
-         "./DB/MCScanX/al_sm/sm.bed"),
-        
-        # For AL-TB comparison  
-        ("./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.chromosome.gff3",
-         "./DB/MCScanX/al_tb/al.bed"), 
-        ("./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3",
-         "./DB/MCScanX/al_tb/tb.bed")
-    ]
+    for comp in mcscanx_comparisons:
+        os.makedirs(f"{MCSCANX_DB}/{comp['name']}", exist_ok=True)
+
+    # Define conversion tasks using BRAKER3 outputs (from config)
+    conversions = []
+    for comp in mcscanx_comparisons:
+        comp_dir = f"{MCSCANX_DB}/{comp['name']}"
+        conversions.append(
+            (f"{BRAKER_BASE}/{comp['focal_species']}/braker.gff3",
+             f"{comp_dir}/{comp['focal_prefix']}.bed")
+        )
+        conversions.append(
+            (f"{BRAKER_BASE}/{comp['comp_species']}/braker.gff3",
+             f"{comp_dir}/{comp['comp_prefix']}.bed")
+        )
     
     success_count = 0
     
@@ -394,135 +456,137 @@ prepare_annotation_files()
 def process_bed_files():
     """
     Process and standardize BED files for MCScanX compatibility.
-    
-    This function performs species-specific processing to ensure
-    chromosome naming consistency and format compatibility.
+
+    BRAKER3 GFF3 outputs have long NCBI chromosome names like:
+    'CM041793.1_Aspiorhynchus_laticeps_isolate_BWY-01_chromosome_1,...'
+
+    This function:
+    1. Extracts chromosome numbers from long NCBI names
+    2. Adds species prefix (al, sm, tb) for uniqueness
+    3. Keeps gene IDs as-is (g1.t1 format from BRAKER)
     """
-    
+
     print("=== Processing BED Files ===\n")
-    
-    # Process Aspiorhynchus laticeps files
-    def process_al_bed(input_path, output_path):
-        """Process AL bed file: filter contigs and standardize names."""
-        
-        print(f"Processing AL bed file: {input_path}")
-        
+    print("Converting BRAKER3 chromosome names to MCScanX-compatible format")
+
+    import re
+
+    def extract_chromosome_number(chrom_name):
+        """Extract chromosome/scaffold number from NCBI long names."""
+        # Try to find chromosome number in various formats
+        patterns = [
+            r'chromosome[_\s]+(\d+)',      # chromosome_1, chromosome 1
+            r'chr(\d+)',                    # chr1
+            r'scaffold[_\s]+(\d+)',         # scaffold_1
+            r'CM\d+\.\d+.*chromosome[_\s]+(\d+)',  # NCBI format with chromosome
+            r'(\d+)$',                      # Last number in string
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, chrom_name, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        # If no number found, return a hash-based ID
+        return str(abs(hash(chrom_name)) % 1000)
+
+    def process_braker_bed(input_path, output_path, species_prefix):
+        """
+        Process BRAKER3-derived BED file for MCScanX.
+
+        Args:
+            input_path: Path to input BED file
+            output_path: Path to output processed BED file
+            species_prefix: Species prefix (al, sm, tb) for chromosome names
+        """
+        print(f"Processing {species_prefix.upper()} bed file: {input_path}")
+
+        if not os.path.exists(input_path):
+            print(f"  ERROR: Input file not found")
+            return 0
+
         with open(input_path, 'r') as infile:
             lines = infile.readlines()
-        
-        # Filter and modify lines
+
         processed_lines = []
-        filtered_count = 0
-        modified_count = 0
-        
+        chrom_mapping = {}  # Track chromosome name mappings
+        scaffold_count = 0
+
         for line in lines:
-            # Skip contig sequences (non-chromosomal)
-            if line.startswith('ctg'):
-                filtered_count += 1
+            parts = line.strip().split('\t')
+            if len(parts) < 4:
                 continue
-            
-            # Replace 'chr' prefix with 'al' and fix gene IDs
-            if line.startswith('chr'):
-                line = line.replace('chr', 'al', 1)
-                line = line.replace('evm.TU.ctg', 'evm.model.ctg')
-                modified_count += 1
-            
-            processed_lines.append(line)
-        
-        # Write processed file
-        with open(output_path, 'w') as outfile:
-            outfile.writelines(processed_lines)
-        
-        print(f"  Processed {len(processed_lines)} genes")
-        print(f"  Filtered {filtered_count} contigs")
-        print(f"  Modified {modified_count} chromosome names")
-        return len(processed_lines)
-    
-    # Process Schizothorax macropogon files
-    def process_sm_bed(input_path, output_path):
-        """Process SM bed file: filter scaffolds and add transcript suffixes."""
-        
-        print(f"Processing SM bed file: {input_path}")
-        
-        with open(input_path, 'r') as infile:
-            lines = infile.readlines()
-        
-        # Filter and modify lines
-        processed_lines = []
-        filtered_count = 0
-        modified_count = 0
-        
-        for line in lines:
-            # Skip scaffold sequences
-            if line.startswith('scaffold'):
-                filtered_count += 1
+
+            orig_chrom = parts[0]
+            start = parts[1]
+            end = parts[2]
+            gene_id = parts[3]
+
+            # Skip scaffolds/contigs (non-chromosomal) - keep only chromosomes
+            # Note: NCBI uses both full words and abbreviations:
+            #   - "scaffold" (e.g., SM: scaffold_16)
+            #   - "contig" (full word)
+            #   - "_ctg" (NCBI abbreviation, e.g., AL: _ctg10, _ctg1006)
+            chrom_lower = orig_chrom.lower()
+            if ('scaffold' in chrom_lower or
+                'contig' in chrom_lower or
+                '_ctg' in chrom_lower or
+                '_ptg' in chrom_lower):
+                scaffold_count += 1
                 continue
-            
-            # Replace 'R' prefix with 'sm' and add transcript suffix
-            if line.startswith('R'):
-                parts = line.strip().split()
-                parts[0] = parts[0].replace('R', 'sm', 1)  # Replace chromosome name
-                parts[3] = parts[3] + '.t01'  # Add transcript suffix
-                line = '\t'.join(parts) + '\n'
-                modified_count += 1
-            
-            processed_lines.append(line)
-        
+
+            # Extract chromosome number and add species prefix
+            chrom_num = extract_chromosome_number(orig_chrom)
+            new_chrom = f"{species_prefix}{chrom_num}"
+
+            # Add species prefix to gene ID to ensure global uniqueness
+            # BRAKER3 uses sequential numbering (g1, g2, ...) per species,
+            # so both AL and SM would have g1, g2, etc. without prefixes.
+            # Format: g1 -> al_g1 (matches FASTA header format after stripping .t#)
+            new_gene_id = f"{species_prefix}_{gene_id}"
+
+            # Track mapping for reporting
+            if orig_chrom not in chrom_mapping:
+                chrom_mapping[orig_chrom] = new_chrom
+
+            processed_lines.append(f"{new_chrom}\t{start}\t{end}\t{new_gene_id}\n")
+
         # Write processed file
         with open(output_path, 'w') as outfile:
             outfile.writelines(processed_lines)
-        
-        print(f"  Processed {len(processed_lines)} genes")  
-        print(f"  Filtered {filtered_count} scaffolds")
-        print(f"  Modified {modified_count} chromosome names")
-        return len(processed_lines)
-    
-    # Process Triplophysa bombifrons files  
-    def process_tb_bed(input_path, output_path):
-        """Process TB bed file: standardize chromosome names."""
-        
-        print(f"Processing TB bed file: {input_path}")
-        
-        with open(input_path, 'r') as infile:
-            lines = infile.readlines()
-        
-        # Simple processing - mainly chromosome name standardization
-        processed_lines = []
-        modified_count = 0
-        
-        for line in lines:
-            # Standardize chromosome names if needed
-            if 'scaffold' in line or 'chromosome' in line:
-                # Can add specific processing if needed
-                modified_count += 1
-            
-            processed_lines.append(line)
-        
-        # Write processed file
-        with open(output_path, 'w') as outfile:
-            outfile.writelines(processed_lines)
-        
+
         print(f"  Processed {len(processed_lines)} genes")
-        if modified_count > 0:
-            print(f"  Modified {modified_count} entries")
+        print(f"  Filtered {scaffold_count} scaffolds/contigs")
+        print(f"  Unique chromosomes: {len(chrom_mapping)}")
+        if chrom_mapping:
+            # Show first few mappings
+            for i, (orig, new) in enumerate(list(chrom_mapping.items())[:3]):
+                orig_short = orig[:40] + "..." if len(orig) > 40 else orig
+                print(f"    {orig_short} -> {new}")
+            if len(chrom_mapping) > 3:
+                print(f"    ... and {len(chrom_mapping) - 3} more")
+
         return len(processed_lines)
-    
-    # Execute processing for AL-SM comparison
-    print("Processing files for AL-SM comparison:")
-    al_genes_sm = process_al_bed("./DB/MCScanX/al_sm/al.bed", 
-                                "./DB/MCScanX/al_sm/al-filtered-modified.bed")
-    sm_genes = process_sm_bed("./DB/MCScanX/al_sm/sm.bed", 
-                             "./DB/MCScanX/al_sm/sm-filtered-modified.bed")
-    
-    print("\nProcessing files for AL-TB comparison:")
-    al_genes_tb = process_al_bed("./DB/MCScanX/al_tb/al.bed",
-                                "./DB/MCScanX/al_tb/al-filtered-modified.bed") 
-    tb_genes = process_tb_bed("./DB/MCScanX/al_tb/tb.bed",
-                             "./DB/MCScanX/al_tb/tb-filtered-modified.bed")
-    
+
+    # Execute processing for each comparison pair
+    gene_counts = {}
+    for comp in mcscanx_comparisons:
+        comp_dir = f"{MCSCANX_DB}/{comp['name']}"
+        print(f"Processing files for {comp['name'].upper()} comparison:")
+        focal_genes = process_braker_bed(
+            f"{comp_dir}/{comp['focal_prefix']}.bed",
+            f"{comp_dir}/{comp['focal_prefix']}-filtered-modified.bed",
+            comp['focal_prefix']
+        )
+        comp_genes = process_braker_bed(
+            f"{comp_dir}/{comp['comp_prefix']}.bed",
+            f"{comp_dir}/{comp['comp_prefix']}-filtered-modified.bed",
+            comp['comp_prefix']
+        )
+        gene_counts[comp['name']] = (focal_genes, comp_genes)
+        print()
+
     print(f"\nBED file processing summary:")
-    print(f"  AL-SM: {al_genes_sm} + {sm_genes} = {al_genes_sm + sm_genes} total genes")
-    print(f"  AL-TB: {al_genes_tb} + {tb_genes} = {al_genes_tb + tb_genes} total genes")
+    for comp_name, (f_count, c_count) in gene_counts.items():
+        print(f"  {comp_name.upper()}: {f_count} + {c_count} = {f_count + c_count} total genes")
 
 # Execute BED file processing
 process_bed_files()
@@ -541,30 +605,24 @@ def create_mcscanx_inputs():
     
     print("=== Creating MCScanX Input Files ===\n")
     
-    comparisons = ['al_sm', 'al_tb']
+    comparisons = comparison_names
     
     for comparison in comparisons:
         print(f"Creating inputs for {comparison} comparison...")
         
         # Define file paths
-        comparison_dir = f"./DB/MCScanX/{comparison}"
+        comparison_dir = f"{MCSCANX_DB}/{comparison}"
         combined_bed = f"{comparison_dir}/{comparison}.bed"
         combined_gff = f"{comparison_dir}/{comparison}.gff"  # MCScanX uses .gff extension
-        blast_file = f"./Outputs/Blastp/{comparison}.blast"
+        blast_file = f"{BLASTP_OUTPUT}/{comparison}.blast"
         target_blast = f"{comparison_dir}/{comparison}.blast"
         
-        # Combine BED files
-        species_files = []
-        if comparison == 'al_sm':
-            species_files = [
-                f"{comparison_dir}/al-filtered-modified.bed",
-                f"{comparison_dir}/sm-filtered-modified.bed"
-            ]
-        elif comparison == 'al_tb':
-            species_files = [
-                f"{comparison_dir}/al-filtered-modified.bed", 
-                f"{comparison_dir}/tb-filtered-modified.bed"
-            ]
+        # Combine BED files (data-driven from config)
+        comp = next(c for c in mcscanx_comparisons if c['name'] == comparison)
+        species_files = [
+            f"{comparison_dir}/{comp['focal_prefix']}-filtered-modified.bed",
+            f"{comparison_dir}/{comp['comp_prefix']}-filtered-modified.bed"
+        ]
         
         # Combine BED files
         total_genes = 0
@@ -593,13 +651,38 @@ def create_mcscanx_inputs():
         
         # Create properly formatted GFF file
         reformat_for_mcscanx(combined_bed, combined_gff)
-        
-        # Copy BLAST file
+
+        # Process BLAST file: strip transcript suffix (.t#) to match GFF gene IDs
+        # BRAKER3 outputs protein IDs as "g1.t1" but GFF has gene IDs as "g1"
+        def process_blast_for_mcscanx(input_blast, output_blast):
+            """
+            Process BLAST output to match MCScanX GFF gene ID format.
+
+            BRAKER3 protein headers use gene.transcript format (g1.t1, g2.t2, etc.)
+            while gene coordinates use just gene IDs (g1, g2, etc.).
+            MCScanX requires exact matching, so we strip the transcript suffix.
+            """
+            import re
+            processed_count = 0
+
+            with open(input_blast, 'r') as infile, open(output_blast, 'w') as outfile:
+                for line in infile:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 2:
+                        # Strip .t# suffix from query (col 0) and subject (col 1)
+                        # Pattern: g1234.t1 -> g1234
+                        parts[0] = re.sub(r'\.t\d+$', '', parts[0])
+                        parts[1] = re.sub(r'\.t\d+$', '', parts[1])
+                        outfile.write('\t'.join(parts) + '\n')
+                        processed_count += 1
+
+            return processed_count
+
         if os.path.exists(blast_file):
-            import shutil
-            shutil.copy2(blast_file, target_blast)
-            blast_size = os.path.getsize(blast_file) / (1024*1024)
-            print(f"  Copied BLAST file: {blast_size:.1f} MB")
+            blast_count = process_blast_for_mcscanx(blast_file, target_blast)
+            blast_size = os.path.getsize(target_blast) / (1024*1024)
+            print(f"  Processed BLAST file: {blast_count:,} hits, {blast_size:.1f} MB")
+            print(f"    (Stripped .t# transcript suffixes to match GFF gene IDs)")
         else:
             print(f"  WARNING: BLAST file {blast_file} not found")
         
@@ -688,7 +771,7 @@ def run_mcscanx_analysis():
     
     print("=== Running MCScanX Analysis ===\n")
     
-    comparisons = ['al_sm', 'al_tb']
+    comparisons = comparison_names
     mcscanx_cmd = "./Apps/MCScanX/V1/MCScanX-1.0.0/MCScanX"
     
     results_summary = {}
@@ -696,7 +779,7 @@ def run_mcscanx_analysis():
     for comparison in comparisons:
         print(f"Running MCScanX for {comparison} comparison...")
         
-        input_prefix = f"./DB/MCScanX/{comparison}/{comparison}"
+        input_prefix = f"{MCSCANX_DB}/{comparison}/{comparison}"
         gff_file = f"{input_prefix}.gff"
         blast_file = f"{input_prefix}.blast"
         
@@ -757,7 +840,7 @@ def run_mcscanx_analysis():
                 print(f"  Tandem gene pairs: {tandem_count}")
             
             # Check HTML outputs
-            html_files = [f for f in os.listdir(f"./DB/MCScanX/{comparison}") if f.endswith('.html')]
+            html_files = [f for f in os.listdir(f"{MCSCANX_DB}/{comparison}") if f.endswith('.html')]
             result_stats['html_files'] = len(html_files)
             print(f"  HTML visualization files: {len(html_files)}")
             
@@ -853,7 +936,7 @@ def extract_chromosome_info(comparison):
     dict : Chromosome information for visualization control files
     """
     
-    gff_file = f"./DB/MCScanX/{comparison}/{comparison}.gff"
+    gff_file = f"{MCSCANX_DB}/{comparison}/{comparison}.gff"
     
     if not os.path.exists(gff_file):
         print(f"GFF file not found: {gff_file}")
@@ -869,74 +952,105 @@ def extract_chromosome_info(comparison):
             if len(parts) >= 1:
                 chromosomes.add(parts[0])
     
-    # Sort chromosomes for consistent ordering
-    al_chroms = sorted([c for c in chromosomes if c.startswith('al')])
-    other_chroms = sorted([c for c in chromosomes if not c.startswith('al')])
-    
-    print(f"  AL chromosomes: {len(al_chroms)}")
-    print(f"  Other chromosomes: {len(other_chroms)}")
-    
+    # Sort chromosomes by species prefix (derived from comparison name)
+    focal_prefix = comparison.split('_')[0]
+    comp_prefix = comparison.split('_')[1]
+    focal_chroms = sorted([c for c in chromosomes if c.startswith(focal_prefix)])
+    other_chroms = sorted([c for c in chromosomes if c.startswith(comp_prefix)])
+
+    print(f"  {focal_prefix.upper()} chromosomes: {len(focal_chroms)}")
+    print(f"  {comp_prefix.upper()} chromosomes: {len(other_chroms)}")
+
     return {
-        'al_chromosomes': al_chroms,
+        'focal_chromosomes': focal_chroms,
         'other_chromosomes': other_chroms,
-        'all_chromosomes': al_chroms + other_chroms
+        'all_chromosomes': focal_chroms + other_chroms,
+        'focal_prefix': focal_prefix
     }
 
 def create_visualization_control_files():
     """
-    Create control files for different visualization types.
+    Create control files for different MCScanX visualization types.
+
+    MCScanX control files have a specific format:
+    - Tab-separated: VALUE<tab>//comment
+    - Different plots require different structures
+
+    Reference: MCScanX/downstream_analyses/*.ctl examples
     """
-    
+
     print("=== Creating Visualization Control Files ===\n")
-    
-    comparisons = ['al_sm', 'al_tb']
-    
+
+    comparisons = comparison_names
+
     for comparison in comparisons:
         chrom_info = extract_chromosome_info(comparison)
-        
+
         if not chrom_info:
             continue
-        
-        comparison_dir = f"./DB/MCScanX/{comparison}"
-        
-        # Create control files for different plot types
-        control_files = {
-            'dot.ctl': {
-                'plot_type': 'dot',
-                'chromosomes': ','.join(chrom_info['all_chromosomes'])
-            },
-            'dual_synteny.ctl': {
-                'plot_type': 'dual_synteny', 
-                'chromosomes': ','.join(chrom_info['all_chromosomes'])
-            },
-            'circle.ctl': {
-                'plot_type': 'circle',
-                'chromosomes': ','.join(chrom_info['all_chromosomes'][:20])  # Limit for readability
-            },
-            'bar.ctl': {
-                'plot_type': 'bar',
-                'chromosomes': ','.join(chrom_info['all_chromosomes'])
-            }
-        }
-        
-        for ctl_file, params in control_files.items():
-            ctl_path = os.path.join(comparison_dir, ctl_file)
-            
-            # Create basic control file content
-            with open(ctl_path, 'w') as f:
-                f.write(f"// Control file for {params['plot_type']} visualization\n")
-                f.write(f"{params['chromosomes']}\n")
-                
-                # Add plot-specific parameters
-                if params['plot_type'] == 'circle':
-                    f.write("500\n")  # Image size
-                    f.write("1\n")    # Show links
-                elif params['plot_type'] == 'dual_synteny':
-                    f.write("1000\n")  # Image width
-                    f.write("800\n")   # Image height
-            
-            print(f"Created {ctl_file} for {comparison}")
-        
+
+        comparison_dir = f"{MCSCANX_DB}/{comparison}"
+
+        # Get sorted chromosome lists for each species (generic numeric sort)
+        focal_chroms = sorted(chrom_info['focal_chromosomes'],
+                              key=lambda x: int(re.sub(r'[^0-9]', '', x) or '0'))
+        other_chroms = sorted(chrom_info['other_chromosomes'],
+                              key=lambda x: int(re.sub(r'[^0-9]', '', x) or '0'))
+
+        # Build display labels from comparison metadata
+        comp_meta = next(c for c in mcscanx_comparisons if c['name'] == comparison)
+        focal_label = get_focal_display_name(abbreviated=True)
+        comp_label = comp_meta['comp_species'].replace('_', ' ')
+        comp_label = f"{comp_label.split()[0][0]}. {comp_label.split()[1]}"
+
+        focal_chroms_str = ','.join(focal_chroms)
+        other_chroms_str = ','.join(other_chroms)
+
+        # Create dot.ctl
+        # Format: x_dim, y_dim, x_axis_chroms (reference), y_axis_chroms (target)
+        dot_ctl_path = os.path.join(comparison_dir, 'dot.ctl')
+        with open(dot_ctl_path, 'w') as f:
+            f.write("1200\t//dimension (in pixels) of x axis\n")
+            f.write("1200\t//dimension (in pixels) of y axis\n")
+            f.write(f"{focal_chroms_str}\t//chromosomes in x axis ({focal_label})\n")
+            f.write(f"{other_chroms_str}\t//chromosomes in y axis ({comp_label})\n")
+        print(f"Created dot.ctl for {comparison}")
+
+        # Create circle.ctl
+        # Format: dimension, chromosome_list
+        circle_ctl_path = os.path.join(comparison_dir, 'circle.ctl')
+        with open(circle_ctl_path, 'w') as f:
+            f.write("1000\t//plot width and height (in pixels)\n")
+            # Interleave chromosomes for better circular visualization
+            interleaved = []
+            for i in range(max(len(focal_chroms), len(other_chroms))):
+                if i < len(focal_chroms):
+                    interleaved.append(focal_chroms[i])
+                if i < len(other_chroms):
+                    interleaved.append(other_chroms[i])
+            f.write(f"{','.join(interleaved)}\t//chromosomes in the circle\n")
+        print(f"Created circle.ctl for {comparison}")
+
+        # Create dual_synteny.ctl
+        # Format: width, height, left_chroms (species1), right_chroms (species2)
+        dual_ctl_path = os.path.join(comparison_dir, 'dual_synteny.ctl')
+        with open(dual_ctl_path, 'w') as f:
+            f.write("800\t//plot width (in pixels)\n")
+            f.write("1200\t//plot height (in pixels)\n")
+            f.write(f"{focal_chroms_str}\t//chromosomes in the left column ({focal_label})\n")
+            f.write(f"{other_chroms_str}\t//chromosomes in the right column ({comp_label})\n")
+        print(f"Created dual_synteny.ctl for {comparison}")
+
+        # Create bar.ctl
+        # Format: x_dim, y_dim, reference_chroms, target_chroms
+        bar_ctl_path = os.path.join(comparison_dir, 'bar.ctl')
+        with open(bar_ctl_path, 'w') as f:
+            f.write("1200\t//dimension (in pixels) of x axis\n")
+            f.write("800\t//dimension (in pixels) of y axis\n")
+            f.write(f"{focal_chroms_str}\t//reference chromosomes ({focal_label})\n")
+            f.write(f"{other_chroms_str}\t//target chromosomes ({comp_label})\n")
+        print(f"Created bar.ctl for {comparison}")
+
         print()
 
 # Execute control file creation
@@ -948,84 +1062,91 @@ create_visualization_control_files()
 ```{python}
 def generate_visualizations():
     """
-    Generate multiple types of synteny visualizations.
+    Generate multiple types of synteny visualizations using MCScanX Java tools.
+
+    Java tools are invoked as: java -cp <classpath> <classname> -g gff -s col -c ctl -o out
+    Note: Use class name (without .java/.class extension), not file path.
     """
-    
+
     print("=== Generating Synteny Visualizations ===\n")
-    
+
     if not compilation_success:
         print("Visualization tools not properly compiled. Skipping visualization generation.")
         return
-    
-    comparisons = ['al_sm', 'al_tb']
-    tools_dir = "./Apps/MCScanX/V1/MCScanX-1.0.0/downstream_analyses/"
-    
+
+    comparisons = comparison_names
+    tools_dir = "./Apps/MCScanX/V1/MCScanX-1.0.0/downstream_analyses"
+
+    # Define visualization types with Java class names (not file names)
     visualization_types = [
         {
             'name': 'Dot Plot',
-            'tool': 'dot_plotter.java',
-            'control': 'dot.ctl', 
+            'class': 'dot_plotter',
+            'control': 'dot.ctl',
             'output': 'dot.PNG'
         },
         {
             'name': 'Dual Synteny Plot',
-            'tool': 'dual_synteny_plotter.java',
+            'class': 'dual_synteny_plotter',
             'control': 'dual_synteny.ctl',
             'output': 'dual_synteny.PNG'
         },
         {
             'name': 'Circle Plot',
-            'tool': 'circle_plotter',
+            'class': 'circle_plotter',
             'control': 'circle.ctl',
-            'output': 'circle.PNG',
-            'classpath': True
+            'output': 'circle.PNG'
         },
         {
-            'name': 'Bar Plot', 
-            'tool': 'bar_plotter.java',
+            'name': 'Bar Plot',
+            'class': 'bar_plotter',
             'control': 'bar.ctl',
             'output': 'bar.PNG'
         }
     ]
-    
+
     for comparison in comparisons:
         print(f"Generating visualizations for {comparison}...")
-        comparison_dir = f"./DB/MCScanX/{comparison}"
-        
+        comparison_dir = f"{MCSCANX_DB}/{comparison}"
+
         # Verify input files exist
         gff_file = f"{comparison_dir}/{comparison}.gff"
         collinearity_file = f"{comparison_dir}/{comparison}.collinearity"
-        
+
         if not (os.path.exists(gff_file) and os.path.exists(collinearity_file)):
             print(f"  Missing required files for {comparison}")
             continue
-        
+
         for viz in visualization_types:
             print(f"  Creating {viz['name']}...")
-            
+
             control_file = f"{comparison_dir}/{viz['control']}"
             output_file = f"{comparison_dir}/{viz['output']}"
-            
+
             if not os.path.exists(control_file):
                 print(f"    Control file {viz['control']} not found, skipping")
                 continue
-            
-            # Build command
-            if viz.get('classpath'):
-                # Special case for circle plotter
-                cmd = f"java -classpath {tools_dir} {viz['tool']} -g {gff_file} -s {collinearity_file} -c {control_file} -o {output_file}"
-            else:
-                cmd = f"java {tools_dir}{viz['tool']} -g {gff_file} -s {collinearity_file} -c {control_file} -o {output_file}"
-            
+
+            # Build Java command with proper classpath
+            # Format: java -cp <classpath> <classname> -g gff -s col -c ctl -o out
+            cmd = (f"java -cp {tools_dir} {viz['class']} "
+                   f"-g {gff_file} -s {collinearity_file} "
+                   f"-c {control_file} -o {output_file}")
+
             # Execute visualization command
-            exit_code = os.system(cmd + " 2>/dev/null")  # Suppress error output
-            
-            if exit_code == 0 and os.path.exists(output_file):
+            import subprocess
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+            if result.returncode == 0 and os.path.exists(output_file):
                 file_size = os.path.getsize(output_file) / 1024  # Size in KB
                 print(f"    ✓ {viz['name']} created ({file_size:.1f} KB)")
             else:
                 print(f"    ✗ {viz['name']} generation failed")
-        
+                if result.stderr:
+                    # Show first line of error for debugging
+                    error_lines = result.stderr.strip().split('\n')
+                    print(f"      Error: {error_lines[0][:80]}")
+
         print()
 
 # Execute visualization generation
@@ -1044,13 +1165,13 @@ def analyze_results():
     
     print("=== MCScanX Results Analysis ===\n")
     
-    comparisons = ['al_sm', 'al_tb'] 
+    comparisons = comparison_names 
     
     for comparison in comparisons:
         print(f"{comparison.upper()} Analysis Results:")
         print("-" * 40)
         
-        comparison_dir = f"./DB/MCScanX/{comparison}"
+        comparison_dir = f"{MCSCANX_DB}/{comparison}"
         
         # Check result files
         result_files = {
@@ -1138,6 +1259,63 @@ def analyze_results():
 analyze_results()
 ```
 
+#### Out[15]: ✓ Done 0.0s
+```
+=== MCScanX Results Analysis ===
+
+AL_SM Analysis Results:
+----------------------------------------
+Synteny Analysis:
+  Synteny blocks identified: 3016
+  Syntenic gene pairs: 95301
+  Average block size: 31.6 genes
+  Largest block: 945 genes
+  Smallest block: 5 genes
+Tandem Duplication:
+  Tandem gene pairs: 3732
+Visualizations:
+  ✓ dot.PNG (68.9 KB)
+  ✓ dual_synteny.PNG (324.7 KB)
+  ✓ circle.PNG (166.1 KB)
+  ✓ bar.PNG (35.8 KB)
+HTML Reports:
+  Generated 2 chromosome-specific HTML reports
+
+AL_TB Analysis Results:
+----------------------------------------
+Synteny Analysis:
+  Synteny blocks identified: 1860
+  Syntenic gene pairs: 37385
+  Average block size: 20.1 genes
+  Largest block: 488 genes
+  Smallest block: 5 genes
+Tandem Duplication:
+  Tandem gene pairs: 3655
+Visualizations:
+  ✓ dot.PNG (66.1 KB)
+  ✓ dual_synteny.PNG (320.0 KB)
+  ✓ circle.PNG (459.5 KB)
+  ✓ bar.PNG (35.1 KB)
+HTML Reports:
+  Generated 1 chromosome-specific HTML reports
+
+=== Overall Summary ===
+MCScanX analysis pipeline completed successfully
+Key outputs generated:
+  • Synteny block identification (.collinearity files)
+  • Tandem duplication detection (.tandem files)
+  • Multiple visualization formats (PNG images)
+  • Interactive HTML reports for detailed examination
+
+Next steps:
+  1. Examine collinearity files for synteny block details
+  2. Review visualization plots for genomic relationships
+  3. Analyze HTML reports for chromosome-specific synteny
+  4. Compare synteny patterns between different species pairs
+
+```
+
+
 ### Quality Control and File Verification
 
 ```{python}
@@ -1148,13 +1326,13 @@ def quality_control_check():
     
     print("=== Quality Control Report ===\n")
     
-    comparisons = ['al_sm', 'al_tb']
+    comparisons = comparison_names
     
     overall_status = True
     
     for comparison in comparisons:
         print(f"QC Report for {comparison}:")
-        comparison_dir = f"./DB/MCScanX/{comparison}"
+        comparison_dir = f"{MCSCANX_DB}/{comparison}"
         
         # Essential files check
         essential_files = [
@@ -1239,6 +1417,356 @@ def quality_control_check():
 quality_control_check()
 ```
 
+## CAFE-Synteny Integration Analysis
+
+This section integrates CAFE5 gene family evolution results with synteny analysis to understand whether significantly expanded/contracted families show specific patterns in syntenic regions.
+
+### Load CAFE Results for Synteny Integration
+
+```{python}
+import pandas as pd
+import numpy as np
+
+# Load CAFE family-level p-values
+# Note: First column header starts with '#' so we read it and rename
+cafe_family_results = pd.read_csv(
+    CAFE_FAMILY_RESULTS,
+    sep='\t'
+)
+# Rename columns (first column includes '#' prefix in header)
+cafe_family_results.columns = ['FamilyID', 'pvalue', 'Significant']
+
+# Load CAFE per-family per-species changes
+cafe_changes = pd.read_csv(
+    CAFE_CHANGE_TAB,
+    sep='\t'
+)
+
+# Get focal species column
+focal_change_col = f"{get_focal_abbreviation()}_Change"
+asp_col = [c for c in cafe_changes.columns if get_focal_species() in c][0]
+
+# Merge with p-values and categorize
+cafe_asp = cafe_family_results.copy()
+cafe_asp[focal_change_col] = cafe_changes[asp_col].values
+
+# Filter to significant families
+cafe_expanded = cafe_asp[(cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] > 0)]['FamilyID'].tolist()
+cafe_contracted = cafe_asp[(cafe_asp['pvalue'] < 0.05) & (cafe_asp[focal_change_col] < 0)]['FamilyID'].tolist()
+
+print("=== CAFE Families for Synteny Integration ===")
+focal_display = get_focal_display_name(abbreviated=True)
+print(f"CAFE-expanded families in {focal_display}: {len(cafe_expanded)}")
+print(f"CAFE-contracted families in {focal_display}: {len(cafe_contracted)}")
+```
+
+### Load OrthoFinder to Gene Mapping
+
+```{python}
+import os
+import re
+
+# Load OrthoFinder orthogroups to map family IDs to genes
+orthogroups_df = pd.read_csv(ORTHOGROUPS_TSV, sep='\t')
+
+# Extract focal species genes for each CAFE family
+def get_asp_genes_for_families(families, orthogroups_df):
+    """Extract focal species genes for a list of orthogroup families."""
+    genes = []
+    asp_col = get_focal_species()
+    if asp_col not in orthogroups_df.columns:
+        print(f"Warning: {asp_col} column not found")
+        return genes
+
+    for family in families:
+        family_row = orthogroups_df[orthogroups_df['Orthogroup'] == family]
+        if not family_row.empty and pd.notna(family_row[asp_col].values[0]):
+            gene_list = str(family_row[asp_col].values[0]).split(', ')
+            genes.extend([(gene, family) for gene in gene_list])
+    return genes
+
+# Get genes for expanded and contracted families
+expanded_genes = get_asp_genes_for_families(cafe_expanded, orthogroups_df)
+contracted_genes = get_asp_genes_for_families(cafe_contracted, orthogroups_df)
+
+print(f"\nGenes in CAFE-expanded families: {len(expanded_genes)}")
+print(f"Genes in CAFE-contracted families: {len(contracted_genes)}")
+```
+
+### Create MCScanX-Compatible CAFE Gene Lists
+
+This section creates versions of the CAFE gene lists with species-prefixed IDs
+to match the MCScanX output format. The original CAFE output is preserved.
+
+```{python}
+import os
+import re
+
+def convert_to_mcscanx_format(gene_id, species_prefix='al'):
+    """
+    Convert OrthoFinder gene ID to MCScanX-compatible format.
+
+    OrthoFinder format: g123.t1 (gene.transcript)
+    MCScanX format: al_g123 (species_gene, no transcript suffix)
+
+    This matches the format used in MCScanX GFF/collinearity files
+    after our species-prefix fix.
+    """
+    # Strip transcript suffix (.t1, .t2, etc.)
+    gene_base = re.sub(r'\.t\d+$', '', gene_id)
+    # Add species prefix
+    return f"{species_prefix}_{gene_base}"
+
+# Create MCScanX-compatible gene lists
+focal_prefix = get_focal_mcscanx_prefix()
+expanded_genes_mcscanx = [
+    (convert_to_mcscanx_format(gene, focal_prefix), family)
+    for gene, family in expanded_genes
+]
+contracted_genes_mcscanx = [
+    (convert_to_mcscanx_format(gene, focal_prefix), family)
+    for gene, family in contracted_genes
+]
+
+# Create output directory for integration files
+mcscanx_integration_dir = f"{MCSCANX_DB}/integration"
+os.makedirs(mcscanx_integration_dir, exist_ok=True)
+
+# Save MCScanX-compatible gene lists
+expanded_df = pd.DataFrame(expanded_genes_mcscanx, columns=['Gene_ID_MCScanX', 'Orthogroup'])
+contracted_df = pd.DataFrame(contracted_genes_mcscanx, columns=['Gene_ID_MCScanX', 'Orthogroup'])
+
+# Add original gene IDs for reference
+expanded_df['Gene_ID_Original'] = [g[0] for g in expanded_genes]
+contracted_df['Gene_ID_Original'] = [g[0] for g in contracted_genes]
+
+# Save to TSV files
+expanded_df.to_csv(f'{mcscanx_integration_dir}/cafe_expanded_genes_mcscanx.tsv', sep='\t', index=False)
+contracted_df.to_csv(f'{mcscanx_integration_dir}/cafe_contracted_genes_mcscanx.tsv', sep='\t', index=False)
+
+print("=== MCScanX-Compatible CAFE Gene Lists Created ===")
+print(f"Output directory: {mcscanx_integration_dir}")
+print(f"  cafe_expanded_genes_mcscanx.tsv: {len(expanded_df)} genes")
+print(f"  cafe_contracted_genes_mcscanx.tsv: {len(contracted_df)} genes")
+print(f"\nFormat conversion example:")
+if expanded_genes:
+    orig = expanded_genes[0][0]
+    conv = expanded_genes_mcscanx[0][0]
+    print(f"  Original: {orig} -> MCScanX: {conv}")
+```
+
+### Cross-Reference with Synteny Blocks
+
+```{python}
+# Function to parse MCScanX collinearity file
+def parse_collinearity_file(collinearity_path):
+    """Parse MCScanX collinearity file to extract synteny blocks."""
+    blocks = []
+    current_block = None
+
+    if not os.path.exists(collinearity_path):
+        print(f"Collinearity file not found: {collinearity_path}")
+        return pd.DataFrame()
+
+    with open(collinearity_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('## Alignment'):
+                # New block starts
+                parts = line.split()
+                if len(parts) >= 4:
+                    current_block = parts[2]  # Block number
+            elif line and not line.startswith('#') and current_block:
+                # Gene pair line
+                parts = line.split('\t')
+                if len(parts) >= 3:
+                    blocks.append({
+                        'Block': current_block,
+                        'Gene1': parts[1].split(':')[0] if ':' in parts[1] else parts[1],
+                        'Gene2': parts[2].split(':')[0] if ':' in parts[2] else parts[2]
+                    })
+
+    return pd.DataFrame(blocks)
+
+# Parse synteny blocks for focal species comparisons
+synteny_files = [
+    f'{MCSCANX_DB}/{comp_name}/{comp_name}.collinearity'
+    for comp_name in comparison_names
+]
+
+all_synteny_blocks = []
+for syn_file in synteny_files:
+    if os.path.exists(syn_file):
+        df = parse_collinearity_file(syn_file)
+        if not df.empty:
+            df['Comparison'] = os.path.basename(os.path.dirname(syn_file))
+            all_synteny_blocks.append(df)
+            print(f"Loaded {len(df)} gene pairs from {syn_file}")
+
+if all_synteny_blocks:
+    synteny_df = pd.concat(all_synteny_blocks, ignore_index=True)
+    print(f"\nTotal synteny gene pairs: {len(synteny_df)}")
+else:
+    synteny_df = pd.DataFrame()
+    print("No synteny data available yet - run MCScanX first")
+```
+
+### Analyze CAFE Families in Synteny Blocks
+
+```{python}
+import matplotlib.pyplot as plt
+
+if not synteny_df.empty:
+    # Use MCScanX-compatible gene IDs (with species prefix)
+    # These were created in the previous section with format: al_g123
+    expanded_gene_ids_mcscanx = [g[0] for g in expanded_genes_mcscanx]
+    contracted_gene_ids_mcscanx = [g[0] for g in contracted_genes_mcscanx]
+
+    # Get synteny genes (already have al_/sm_/tb_ prefixes from MCScanX)
+    synteny_genes = set(synteny_df['Gene1'].tolist() + synteny_df['Gene2'].tolist())
+
+    # Filter to only A. laticeps genes in synteny (genes starting with 'al_')
+    al_synteny_genes = {g for g in synteny_genes if g.startswith('al_')}
+
+    # Calculate overlap using matching formats
+    expanded_in_synteny = len(set(expanded_gene_ids_mcscanx) & al_synteny_genes)
+    contracted_in_synteny = len(set(contracted_gene_ids_mcscanx) & al_synteny_genes)
+
+    # For reporting, use original counts
+    n_expanded = len(expanded_gene_ids_mcscanx)
+    n_contracted = len(contracted_gene_ids_mcscanx)
+
+    print("=== CAFE-Synteny Overlap Analysis ===")
+    print(f"Total A. laticeps genes in synteny blocks: {len(al_synteny_genes):,}")
+    print(f"CAFE-expanded genes in synteny blocks: {expanded_in_synteny}/{n_expanded} ({expanded_in_synteny/n_expanded*100:.1f}%)")
+    print(f"CAFE-contracted genes in synteny blocks: {contracted_in_synteny}/{n_contracted} ({contracted_in_synteny/n_contracted*100:.1f}%)")
+
+    # Create visualization
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    categories = ['CAFE-Expanded', 'CAFE-Contracted']
+    in_synteny = [expanded_in_synteny, contracted_in_synteny]
+    not_in_synteny = [n_expanded - expanded_in_synteny,
+                     n_contracted - contracted_in_synteny]
+
+    x = np.arange(len(categories))
+    width = 0.35
+
+    bars1 = ax.bar(x - width/2, in_synteny, width, label='In Synteny Blocks', color='#2E8B57')
+    bars2 = ax.bar(x + width/2, not_in_synteny, width, label='Not in Synteny', color='#DC143C', alpha=0.6)
+
+    ax.set_ylabel('Number of Genes', fontsize=14)
+    ax.set_title('CAFE-Significant Genes in Synteny Blocks', fontsize=16, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, fontsize=12)
+    ax.legend(fontsize=12)
+
+    # Add percentage labels
+    for bar, total in zip(bars1, [n_expanded, n_contracted]):
+        height = bar.get_height()
+        ax.annotate(f'{height/total*100:.1f}%', xy=(bar.get_x() + bar.get_width()/2, height),
+                   xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig(f'{OUTPUT_FIGURES}/cafe_synteny_overlap.png', dpi=300, bbox_inches='tight')
+    plt.savefig(f'{OUTPUT_FIGURES}/cafe_synteny_overlap.pdf', bbox_inches='tight')
+    plt.show()
+else:
+    print("Synteny analysis not yet completed. Run MCScanX sections first, then re-run this analysis.")
+```
+
+### Tandem Duplication Analysis for CAFE Families
+
+```{python}
+# Check if CAFE-expanded genes show tandem duplication patterns
+# Tandem genes in MCScanX output use species-prefixed format (al_g123)
+tandem_files = [
+    f'{MCSCANX_DB}/{comp_name}/{comp_name}.tandem'
+    for comp_name in comparison_names
+]
+
+tandem_genes = set()
+for tandem_file in tandem_files:
+    if os.path.exists(tandem_file):
+        with open(tandem_file, 'r') as f:
+            for line in f:
+                genes = line.strip().split(',')
+                tandem_genes.update(genes)
+        print(f"Loaded tandem genes from {tandem_file}")
+
+# Filter to focal species tandem genes only
+focal_prefix = get_focal_mcscanx_prefix()
+al_tandem_genes = {g for g in tandem_genes if g.startswith(f'{focal_prefix}_')}
+print(f"Total {get_focal_display_name(abbreviated=True)} tandem genes: {len(al_tandem_genes)}")
+
+if al_tandem_genes:
+    # Use MCScanX-compatible gene IDs for comparison
+    expanded_tandem = len(set(expanded_gene_ids_mcscanx) & al_tandem_genes)
+    contracted_tandem = len(set(contracted_gene_ids_mcscanx) & al_tandem_genes)
+
+    print("\n=== CAFE Families in Tandem Duplications ===")
+    print(f"CAFE-expanded genes in tandem duplications: {expanded_tandem}/{n_expanded} ({expanded_tandem/n_expanded*100:.1f}%)")
+    print(f"CAFE-contracted genes in tandem duplications: {contracted_tandem}/{n_contracted} ({contracted_tandem/n_contracted*100:.1f}%)")
+
+    # Higher tandem duplication in expanded families suggests recent duplications
+    if expanded_tandem > contracted_tandem:
+        print("\n★ Insight: CAFE-expanded families show more tandem duplications,")
+        print("  suggesting recent gene amplification events in A. laticeps lineage.")
+else:
+    print("Tandem duplication data not available yet. Run MCScanX first.")
+```
+
+### Summary: CAFE-Synteny Integration
+
+```{python}
+print("\n" + "="*60)
+print("    CAFE-SYNTENY INTEGRATION SUMMARY")
+print("="*60)
+
+if not synteny_df.empty:
+    print(f"\nSynteny Analysis:")
+    print(f"  • Total synteny blocks analyzed: {len(synteny_df['Block'].unique())}")
+    print(f"  • A. laticeps genes in synteny: {len(al_synteny_genes):,}")
+    print(f"  • CAFE-expanded genes in synteny: {expanded_in_synteny} ({expanded_in_synteny/n_expanded*100:.1f}%)")
+    print(f"  • CAFE-contracted genes in synteny: {contracted_in_synteny} ({contracted_in_synteny/n_contracted*100:.1f}%)")
+
+print(f"\nCAFE Families:")
+print(f"  • Significantly expanded families: {len(cafe_expanded)}")
+print(f"  • Significantly contracted families: {len(cafe_contracted)}")
+
+print(f"\nBiological Interpretation:")
+print("  • Genes in synteny blocks represent conserved genomic regions")
+print("  • CAFE-expanded genes NOT in synteny may represent novel duplications")
+print("  • CAFE-contracted genes in synteny may indicate ancestral gene loss")
+print("\n" + "="*60)
+```
+
+#### Out[26]: ✓ Done 0.0s
+```
+============================================================
+    CAFE-SYNTENY INTEGRATION SUMMARY
+============================================================
+
+Synteny Analysis:
+  • Total synteny blocks analyzed: 3013
+  • A. laticeps genes in synteny: 50,175
+  • CAFE-expanded genes in synteny: 3928 (19.0%)
+  • CAFE-contracted genes in synteny: 804 (30.3%)
+
+CAFE Families:
+  • Significantly expanded families: 1233
+  • Significantly contracted families: 647
+
+Biological Interpretation:
+  • Genes in synteny blocks represent conserved genomic regions
+  • CAFE-expanded genes NOT in synteny may represent novel duplications
+  • CAFE-contracted genes in synteny may indicate ancestral gene loss
+
+============================================================
+
+```
+
+
 ## Conclusion and Next Steps
 
 This comprehensive MCScanX analysis pipeline has successfully:
@@ -1265,9 +1793,7 @@ This comprehensive MCScanX analysis pipeline has successfully:
 
 ### File Organization
 
-All analysis outputs are organized in the `./DB/MCScanX/` directory structure:
-- `al_sm/` - Aspiorhynchus vs. Schizothorax comparison
-- `al_tb/` - Aspiorhynchus vs. Triplophysa comparison
+All analysis outputs are organized in the `./DB/MCScanX/` directory structure, with subdirectories for each comparison pair as defined in the YAML configuration.
 
 Each comparison directory contains complete analysis results including input files, MCScanX outputs, and visualization products.
 

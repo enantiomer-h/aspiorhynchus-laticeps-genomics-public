@@ -1,0 +1,2392 @@
+---
+title: Genome-Wide Positive Selection Screening
+subtitle: Identifying genes under selection across ALL A. laticeps orthogroups (no CAFE filter)
+jupyter:
+  kernelspec:
+    display_name: Python (PAML)
+    language: python
+    name: env_paml
+---
+
+## Project Overview
+
+This notebook performs **genome-wide Ka/Ks (dN/dS) screening** to identify genes under positive selection in *Aspiorhynchus laticeps*, analyzing **ALL orthogroups** without CAFE significance filtering.
+
+### Why This Notebook?
+
+The original `2-ultimate-KaKs-analysis.qmd` filters to only CAFE-significant families, which:
+
+- **CAFE** detects gene family **size changes** (expansions/contractions)
+- **Ka/Ks** detects **sequence changes** (amino acid substitutions under selection)
+- These are **independent evolutionary signals** - a gene can be under strong positive selection without any copy number change
+
+By removing the CAFE filter, we can discover positively selected genes that may have been missed.
+
+### Two-Tier Analysis Strategy
+
+1. **Tier 1 (yn00)**: Fast pairwise Ka/Ks on ALL ~41,000 orthogroups with A. laticeps
+2. **Tier 2 (codeml)**: Detailed branch model on ~208 single-copy orthologs to test if A. laticeps lineage specifically shows accelerated evolution
+
+### Selection Criteria
+
+- **Positive selection**: omega > 1 (with p < 0.05 for codeml)
+- **Relaxed purifying**: 0.5 < omega < 1.0
+- **Moderate purifying**: 0.1 < omega < 0.5
+- **Strong purifying**: omega < 0.1
+
+### Computational Requirements
+
+- **Runtime**: ~5 hours with 8 parallel workers
+- **Disk space**: ~3 GB
+- **Checkpoint/resume**: Saves progress every 500 orthogroups
+
+## 1. Environment Setup
+
+### 1.1 Verify PAML Installation
+
+```{python}
+import subprocess
+import os
+
+print("Verifying PAML installation...")
+print("-" * 60)
+
+# Check yn00
+result_yn00 = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "yn00"],
+    capture_output=True, text=True
+)
+print(f"yn00 path: {result_yn00.stdout.strip() or 'Not found'}")
+
+# Check codeml
+result_codeml = subprocess.run(
+    ["conda", "run", "-n", "env_paml", "which", "codeml"],
+    capture_output=True, text=True
+)
+print(f"codeml path: {result_codeml.stdout.strip() or 'Not found'}")
+
+if all([result_yn00.returncode == 0, result_codeml.returncode == 0]):
+    print("\nPAML tools installed successfully!")
+else:
+    print("\nWARNING: Some PAML tools may not be installed correctly")
+```
+
+### 1.2 Import Libraries
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from Bio import SeqIO, AlignIO, Phylo
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio.Align import MultipleSeqAlignment
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+from typing import Tuple, List, Dict, Optional, Set
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
+import scipy.stats as stats
+from datetime import datetime
+
+# Load centralized path configuration
+sys.path.insert(0, './Notebooks/config')
+from load_config import (
+    load_paths, get_path, get_version, get_cds_files,
+    get_species_list, get_focal_species, ensure_output_dirs
+)
+
+# Load and display configuration
+config = load_paths(config_path="/home/jovyan/Notebooks/config/paths-set2.yaml")
+print(f"Configuration loaded: OrthoFinder Results_{get_version()}")
+print(f"OrthoFinder results: {get_path('orthofinder.results_dir')}")
+
+# Set plotting style
+plt.style.use('default')
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.size': 12,
+    'axes.linewidth': 1.2,
+    'figure.facecolor': 'white',
+    'axes.facecolor': 'white'
+})
+
+# Define PROJECT_ROOT from config (container path)
+PROJECT_ROOT = Path(get_path('base.project_root'))
+
+def resolve_project_path(relative_path: str) -> str:
+    """
+    Resolve a relative path to an absolute path using PROJECT_ROOT.
+
+    This ensures paths work correctly inside the Docker container where
+    PROJECT_ROOT = /home/jovyan (not the host path).
+    """
+    if relative_path.startswith('./'):
+        relative_path = relative_path[2:]
+    return str(PROJECT_ROOT / relative_path)
+
+print(f"Project root: {PROJECT_ROOT}")
+print(f"Project exists: {PROJECT_ROOT.exists()}")
+```
+
+### 1.3 Define Paths and Configuration
+
+```{python}
+# Define all file paths from centralized configuration
+PATHS = {
+    # OrthoFinder outputs
+    'orthofinder_base': get_path('orthofinder.results_dir'),
+    'orthogroups_tsv': get_path('orthofinder.orthogroups_tsv'),
+    'orthogroups_count': get_path('orthofinder.orthogroups_count'),
+    'msa_dir': get_path('orthofinder.msa_dir'),
+    'single_copy_dir': get_path('orthofinder.single_copy_orthologue_sequences'),
+
+    # Species tree
+    'species_tree': get_path('cafe.input_tree'),
+
+    # CDS directory
+    'cds_base': get_path('database.genome_comparison'),
+
+    # Genome-wide selection output directories (NEW - no CAFE filter)
+    'output_base': get_path('outputs.genomewide_selection.base_dir'),
+    'codon_alignments': get_path('outputs.genomewide_selection.codon_alignments'),
+    'yn00_results': get_path('outputs.genomewide_selection.yn00_results'),
+    'yn00_checkpoints': get_path('outputs.genomewide_selection.yn00_checkpoints'),
+    'codeml_results': get_path('outputs.genomewide_selection.codeml_results'),
+    'summary_dir': get_path('outputs.genomewide_selection.summary'),
+    'figures_dir': get_path('outputs.genomewide_selection.figures'),
+}
+
+# CDS files from centralized configuration
+CDS_FILES = get_cds_files()
+
+# Focal species
+FOCAL_SPECIES = get_focal_species()
+
+# Analysis parameters
+ANALYSIS_CONFIG = {
+    'n_workers': 8,              # Parallel workers
+    'yn00_timeout': 300,         # seconds per orthogroup
+    'codeml_timeout': 600,       # seconds per orthogroup
+    'checkpoint_interval': 500,  # Save progress every N orthogroups
+    'min_species': 4,            # Minimum species for codon alignment
+}
+
+# Selection thresholds
+SELECTION_THRESHOLDS = {
+    'positive': {'omega_min': 1.0},
+    'strong_positive': {'omega_min': 2.0, 'pvalue_max': 0.01},
+    'relaxed_purifying': {'omega_min': 0.5, 'omega_max': 1.0},
+    'moderate_purifying': {'omega_min': 0.1, 'omega_max': 0.5},
+    'strong_purifying': {'omega_max': 0.1}
+}
+
+print("=" * 60)
+print("GENOME-WIDE SELECTION SCREENING CONFIGURATION")
+print("=" * 60)
+print(f"Focal species: {FOCAL_SPECIES}")
+print(f"Species with CDS: {len(CDS_FILES)}")
+print(f"Parallel workers: {ANALYSIS_CONFIG['n_workers']}")
+print(f"Checkpoint interval: {ANALYSIS_CONFIG['checkpoint_interval']} orthogroups")
+print()
+print("Output directories:")
+for name in ['output_base', 'codon_alignments', 'yn00_results', 'codeml_results', 'summary_dir']:
+    print(f"  {name}: {PATHS[name]}")
+```
+
+### 1.4 Create Output Directories
+
+```{python}
+# Create all output directories
+output_dirs = [
+    PATHS['output_base'],
+    PATHS['codon_alignments'],
+    PATHS['yn00_results'],
+    PATHS['yn00_checkpoints'],
+    PATHS['codeml_results'],
+    PATHS['summary_dir'],
+    PATHS['figures_dir'],
+]
+
+for dir_path in output_dirs:
+    resolved = resolve_project_path(dir_path)
+    os.makedirs(resolved, exist_ok=True)
+
+print("Output directories created:")
+for d in output_dirs:
+    resolved = resolve_project_path(d)
+    print(f"  [{os.path.exists(resolved) and 'OK' or 'FAIL'}] {d}")
+```
+
+## 2. Checkpoint Manager
+
+This class enables resume capability for long-running analysis.
+
+```{python}
+class CheckpointManager:
+    """
+    Manage checkpoints for resumable analysis.
+
+    Saves progress periodically so analysis can be interrupted and resumed
+    without losing work. Critical for ~5 hour genome-wide analysis.
+    """
+
+    def __init__(self, checkpoint_dir: str, analysis_name: str):
+        """
+        Initialize checkpoint manager.
+
+        Parameters:
+        - checkpoint_dir: Directory to store checkpoint files
+        - analysis_name: Name prefix for checkpoint files (e.g., 'yn00', 'codeml')
+        """
+        self.checkpoint_dir = resolve_project_path(checkpoint_dir)
+        self.analysis_name = analysis_name
+        self.checkpoint_file = os.path.join(
+            self.checkpoint_dir, f"{analysis_name}_checkpoint.json"
+        )
+        self.results_file = os.path.join(
+            self.checkpoint_dir, f"{analysis_name}_partial_results.tsv"
+        )
+
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+    def load_checkpoint(self) -> Tuple[Set[str], pd.DataFrame]:
+        """
+        Load existing checkpoint if available.
+
+        Returns:
+        - Set of completed orthogroup IDs
+        - DataFrame of partial results (empty if no checkpoint)
+        """
+        completed = set()
+        partial_results = pd.DataFrame()
+
+        if os.path.exists(self.checkpoint_file):
+            with open(self.checkpoint_file, 'r') as f:
+                checkpoint_data = json.load(f)
+            completed = set(checkpoint_data.get('completed', []))
+            print(f"Loaded checkpoint: {len(completed)} orthogroups already processed")
+
+            if os.path.exists(self.results_file):
+                partial_results = pd.read_csv(self.results_file, sep='\t')
+                print(f"Loaded {len(partial_results)} partial results")
+
+        return completed, partial_results
+
+    def save_checkpoint(
+        self,
+        completed: Set[str],
+        results_df: pd.DataFrame,
+        metadata: Dict = None
+    ):
+        """
+        Save current progress.
+
+        Parameters:
+        - completed: Set of completed orthogroup IDs
+        - results_df: DataFrame with results so far
+        - metadata: Optional metadata to save (e.g., runtime stats)
+        """
+        checkpoint_data = {
+            'completed': list(completed),
+            'count': len(completed),
+            'timestamp': datetime.now().isoformat(),
+            'analysis_name': self.analysis_name
+        }
+        if metadata:
+            checkpoint_data['metadata'] = metadata
+
+        with open(self.checkpoint_file, 'w') as f:
+            json.dump(checkpoint_data, f, indent=2)
+
+        if len(results_df) > 0:
+            results_df.to_csv(self.results_file, sep='\t', index=False)
+
+        print(f"Checkpoint saved: {len(completed)} orthogroups processed")
+
+    def get_remaining(self, all_ogs: List[str]) -> List[str]:
+        """
+        Get orthogroups not yet processed.
+
+        Parameters:
+        - all_ogs: Complete list of orthogroup IDs to process
+
+        Returns:
+        - List of orthogroup IDs remaining to process
+        """
+        completed, _ = self.load_checkpoint()
+        remaining = [og for og in all_ogs if og not in completed]
+        return remaining
+
+    def clear_checkpoint(self):
+        """Remove checkpoint files to start fresh."""
+        if os.path.exists(self.checkpoint_file):
+            os.remove(self.checkpoint_file)
+        if os.path.exists(self.results_file):
+            os.remove(self.results_file)
+        print(f"Checkpoint cleared for {self.analysis_name}")
+
+# Test checkpoint manager
+test_cm = CheckpointManager(PATHS['yn00_checkpoints'], 'test')
+print(f"CheckpointManager initialized: {test_cm.checkpoint_dir}")
+```
+
+## 3. Data Loading (No CAFE Filter)
+
+### 3.1 Load ALL Orthogroups
+
+```{python}
+def load_all_orthogroups(orthogroups_path: str) -> pd.DataFrame:
+    """
+    Load complete orthogroup to gene assignments.
+
+    Returns DataFrame with all orthogroups (no filtering).
+    """
+    df = pd.read_csv(orthogroups_path, sep='\t')
+
+    print("=" * 60)
+    print("ORTHOGROUP DATA LOADED")
+    print("=" * 60)
+    print(f"Total orthogroups: {len(df):,}")
+    print(f"Species columns: {len([c for c in df.columns if c != 'Orthogroup'])}")
+
+    return df
+
+orthogroups_df = load_all_orthogroups(PATHS['orthogroups_tsv'])
+```
+
+### 3.2 Filter to A. laticeps-Present Orthogroups (NO CAFE Filter)
+
+```{python}
+def get_all_al_orthogroups(
+    orthogroups_df: pd.DataFrame,
+    focal_species: str = None
+) -> List[str]:
+    """
+    Get ALL orthogroups containing genes from the focal species.
+
+    This is the key difference from the original notebook - we do NOT
+    filter by CAFE significance, allowing discovery of positively
+    selected genes regardless of gene family size evolution.
+
+    Parameters:
+    - orthogroups_df: Complete orthogroups DataFrame
+    - focal_species: Species that must be present
+
+    Returns:
+    - List of orthogroup IDs with focal species genes
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    # Find focal species column
+    focal_col = None
+    for col in orthogroups_df.columns:
+        if focal_species.lower() in col.lower():
+            focal_col = col
+            break
+
+    if focal_col is None:
+        print(f"ERROR: Could not find column for {focal_species}")
+        print(f"Available columns: {orthogroups_df.columns.tolist()}")
+        return []
+
+    # Filter to orthogroups with focal species genes
+    al_present = orthogroups_df[
+        (orthogroups_df[focal_col].notna()) &
+        (orthogroups_df[focal_col] != '')
+    ]
+
+    families = al_present['Orthogroup'].tolist()
+
+    print("=" * 60)
+    print("ORTHOGROUPS FOR GENOME-WIDE SELECTION SCREENING")
+    print("=" * 60)
+    print(f"Total orthogroups: {len(orthogroups_df):,}")
+    print(f"With {focal_species} genes: {len(families):,}")
+    print(f"Coverage: {100*len(families)/len(orthogroups_df):.1f}%")
+    print()
+    print("NOTE: NO CAFE filtering applied - analyzing ALL orthogroups!")
+
+    return families
+
+# Get all orthogroups with A. laticeps genes
+all_al_orthogroups = get_all_al_orthogroups(orthogroups_df, FOCAL_SPECIES)
+print(f"\nOrthogroups to analyze: {len(all_al_orthogroups):,}")
+```
+
+### 3.3 Identify Single-Copy Orthologs
+
+```{python}
+def identify_single_copy_orthologs(
+    msa_dir: str,
+    candidate_orthogroups: List[str],
+    cds_files: Dict[str, str],
+    num_species: int = 12
+) -> List[str]:
+    """
+    Identify TRUE single-copy orthologs (exactly one gene per species).
+
+    These are ideal for codeml branch model analysis because:
+    - No paralog ambiguity
+    - Clean 1:1:1 orthology
+    - Better alignment quality
+
+    Parameters:
+    - msa_dir: Directory with MSA files
+    - candidate_orthogroups: List of orthogroups to check
+    - cds_files: Dict of species -> CDS file paths
+    - num_species: Expected number of species (12 for current analysis)
+
+    Returns:
+    - List of single-copy orthogroup IDs
+    """
+    msa_dir_abs = resolve_project_path(msa_dir)
+    known_species = list(cds_files.keys())
+    single_copy = []
+
+    for og in tqdm(candidate_orthogroups, desc="Identifying single-copy"):
+        msa_file = os.path.join(msa_dir_abs, f"{og}.fa")
+        if not os.path.exists(msa_file):
+            continue
+
+        # Read gene IDs from MSA
+        gene_ids = []
+        with open(msa_file, 'r') as f:
+            for line in f:
+                if line.startswith('>'):
+                    gene_ids.append(line[1:].strip().split()[0])
+
+        # Check gene count matches species count
+        if len(gene_ids) != num_species:
+            continue
+
+        # Verify each gene is from a different species
+        species_found = set()
+        for gid in gene_ids:
+            for sp in known_species:
+                if gid.startswith(sp + '_'):
+                    species_found.add(sp)
+                    break
+
+        # True single-copy if exactly one gene per species
+        if len(species_found) == num_species:
+            single_copy.append(og)
+
+    return single_copy
+
+# Load candidates from OrthoFinder's single-copy directory
+single_copy_dir_abs = resolve_project_path(PATHS['single_copy_dir'])
+
+if os.path.exists(single_copy_dir_abs):
+    candidate_single_copy = [
+        f.replace('.fa', '')
+        for f in os.listdir(single_copy_dir_abs)
+        if f.endswith('.fa')
+    ]
+    print(f"Candidate single-copy from OrthoFinder: {len(candidate_single_copy)}")
+else:
+    candidate_single_copy = []
+    print("WARNING: Single-copy directory not found")
+
+# Verify true single-copy status via MSA directory
+single_copy_orthogroups = identify_single_copy_orthologs(
+    PATHS['msa_dir'],
+    candidate_single_copy,
+    CDS_FILES,
+    num_species=len(CDS_FILES)
+)
+
+# Fallback: MSA files contain all orthogroup members (including paralogs/isoforms),
+# so the species-count check above always fails. Trust OrthoFinder's designation directly.
+if len(single_copy_orthogroups) == 0 and len(candidate_single_copy) > 0:
+    print("WARNING: MSA-based verification returned 0 (MSA files include paralogs/isoforms).")
+    print("Falling back to OrthoFinder's Single_Copy_Orthologue_Sequences list directly.")
+    single_copy_orthogroups = candidate_single_copy
+
+print(f"\nTRUE single-copy orthologs: {len(single_copy_orthogroups)}")
+print(f"These will be used for codeml branch model analysis (Tier 2)")
+```
+
+### 3.4 Build CDS Database
+
+```{python}
+def parse_braker_cds_header(record_id: str) -> str:
+    """Extract gene ID from BRAKER3 braker.codingseq header."""
+    return record_id
+
+
+def build_cds_database(cds_files: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+    """
+    Build a mapping from gene IDs to CDS sequences.
+
+    Returns nested dict: {species: {gene_id: sequence}}
+    """
+    cds_db = {}
+
+    print("=" * 60)
+    print("BUILDING CDS DATABASE")
+    print("=" * 60)
+
+    for species, cds_path in cds_files.items():
+        if not os.path.exists(cds_path):
+            print(f"  SKIP: {species} (file not found)")
+            continue
+
+        cds_db[species] = {}
+        seq_count = 0
+
+        for record in SeqIO.parse(cds_path, "fasta"):
+            gene_id = parse_braker_cds_header(record.id)
+            cds_db[species][gene_id] = str(record.seq).upper()
+            seq_count += 1
+
+        print(f"  {species}: {seq_count:,} CDS sequences")
+
+    print()
+    print(f"Total species loaded: {len(cds_db)}")
+    total_seqs = sum(len(v) for v in cds_db.values())
+    print(f"Total CDS sequences: {total_seqs:,}")
+
+    return cds_db
+
+cds_database = build_cds_database(CDS_FILES)
+```
+
+## 4. Codon Alignment Generation
+
+### 4.1 Core Alignment Functions
+
+```{python}
+def parse_orthofinder_gene_id(
+    gene_id: str,
+    known_species: List[str]
+) -> Tuple[Optional[str], str]:
+    """
+    Parse OrthoFinder gene ID to extract species and gene parts.
+
+    OrthoFinder format: {Species_name}_{gene_id}
+    Example: Anabarilius_grahami_g1086.t1 -> ('Anabarilius_grahami', 'g1086.t1')
+    """
+    for species in sorted(known_species, key=len, reverse=True):
+        prefix = species + '_'
+        if gene_id.startswith(prefix):
+            gene_part = gene_id[len(prefix):]
+            return species, gene_part
+    return None, gene_id
+
+
+def back_translate_alignment(
+    protein_aln: MultipleSeqAlignment,
+    cds_database: Dict[str, Dict[str, str]],
+    min_species: int = 4
+) -> Optional[Dict[str, str]]:
+    """
+    Back-translate protein alignment to codon alignment.
+
+    Parameters:
+    - protein_aln: Protein multiple sequence alignment
+    - cds_database: Mapping of {species: {gene_id: sequence}}
+    - min_species: Minimum number of species required
+
+    Returns:
+    - Dictionary of {sequence_id: codon_aligned_sequence} or None if failed
+    """
+    codon_sequences = {}
+    species_found = set()
+    known_species = list(cds_database.keys())
+
+    for record in protein_aln:
+        full_gene_id = record.id
+
+        # Parse OrthoFinder gene ID
+        species, gene_part = parse_orthofinder_gene_id(full_gene_id, known_species)
+
+        if species is None:
+            continue
+
+        # Look up CDS sequence
+        sp_db = cds_database.get(species, {})
+        cds_seq = None
+
+        if gene_part in sp_db:
+            cds_seq = sp_db[gene_part]
+        else:
+            # Try without transcript suffix
+            gene_base = gene_part.rsplit('.', 1)[0] if '.' in gene_part else gene_part
+            if gene_base in sp_db:
+                cds_seq = sp_db[gene_base]
+
+        if cds_seq is None:
+            continue
+
+        # Back-translate
+        prot_seq = str(record.seq)
+        prot_seq_trimmed = prot_seq.rstrip('*')
+        prot_ungapped = prot_seq_trimmed.replace('-', '').replace('X', '')
+
+        # Strip terminal stop codon from CDS
+        if len(cds_seq) >= 3 and cds_seq[-3:].upper() in {'TAA', 'TAG', 'TGA'}:
+            cds_seq = cds_seq[:-3]
+
+        # Check length compatibility
+        expected_cds_len = len(prot_ungapped) * 3
+
+        if len(cds_seq) >= expected_cds_len:
+            cds_seq = cds_seq[:expected_cds_len]
+        else:
+            continue
+
+        # Build codon-aligned sequence
+        codon_aln = []
+        cds_pos = 0
+
+        for aa in prot_seq_trimmed:
+            if aa == '-':
+                codon_aln.append('---')
+            elif aa == 'X':
+                codon_aln.append('NNN')
+                cds_pos += 3
+            else:
+                if cds_pos + 3 <= len(cds_seq):
+                    codon = cds_seq[cds_pos:cds_pos + 3]
+                    codon_aln.append(codon)
+                    cds_pos += 3
+                else:
+                    codon_aln.append('NNN')
+
+        codon_sequences[full_gene_id] = ''.join(codon_aln)
+        species_found.add(species)
+
+    if len(species_found) < min_species:
+        return None
+
+    return codon_sequences
+
+
+def write_phylip_alignment(
+    codon_sequences: Dict[str, str],
+    output_path: str,
+    name_length: int = 30
+) -> bool:
+    """
+    Write codon alignment in PHYLIP format for PAML.
+    """
+    if not codon_sequences:
+        return False
+
+    output_path_abs = resolve_project_path(output_path)
+    os.makedirs(os.path.dirname(output_path_abs), exist_ok=True)
+
+    aln_length = len(list(codon_sequences.values())[0])
+    n_seqs = len(codon_sequences)
+
+    try:
+        with open(output_path_abs, 'w') as f:
+            f.write(f" {n_seqs} {aln_length}\n")
+            for name, seq in codon_sequences.items():
+                short_name = name[:name_length].ljust(name_length)
+                f.write(f"{short_name}  {seq}\n")
+        return True
+    except Exception as e:
+        print(f"Error writing {output_path_abs}: {e}")
+        return False
+```
+
+### 4.2 Batch Codon Alignment Generation with Checkpoints
+
+```{python}
+def get_protein_alignment(orthogroup: str, msa_dir: str) -> Optional[MultipleSeqAlignment]:
+    """Load protein alignment for an orthogroup."""
+    msa_path = os.path.join(msa_dir, f"{orthogroup}.fa")
+    msa_path_abs = resolve_project_path(msa_path)
+
+    if not os.path.exists(msa_path_abs):
+        return None
+
+    try:
+        return AlignIO.read(msa_path_abs, "fasta")
+    except Exception:
+        return None
+
+
+def generate_codon_alignments_with_checkpoint(
+    orthogroups: List[str],
+    msa_dir: str,
+    cds_database: Dict[str, Dict[str, str]],
+    output_dir: str,
+    checkpoint_manager: CheckpointManager,
+    batch_size: int = 500,
+    min_species: int = 4
+) -> Tuple[List[str], Dict]:
+    """
+    Generate codon alignments for all orthogroups with checkpoint support.
+
+    Parameters:
+    - orthogroups: List of orthogroup IDs to process
+    - msa_dir: Directory with protein MSA files
+    - cds_database: CDS sequence database
+    - output_dir: Output directory for codon alignments
+    - checkpoint_manager: For checkpoint/resume
+    - batch_size: Save checkpoint every N orthogroups
+    - min_species: Minimum species required per alignment
+
+    Returns:
+    - List of successfully processed orthogroups
+    - Statistics dictionary
+    """
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    # Load checkpoint
+    completed, _ = checkpoint_manager.load_checkpoint()
+    remaining = [og for og in orthogroups if og not in completed]
+
+    print("=" * 60)
+    print("GENERATING CODON ALIGNMENTS")
+    print("=" * 60)
+    print(f"Total orthogroups: {len(orthogroups):,}")
+    print(f"Already completed: {len(completed):,}")
+    print(f"Remaining: {len(remaining):,}")
+    print()
+
+    successful = list(completed)
+    stats = {
+        'total': len(orthogroups),
+        'already_done': len(completed),
+        'no_msa': 0,
+        'no_cds_match': 0,
+        'too_few_species': 0,
+        'success': len(completed)
+    }
+
+    batch_completed = set(completed)
+
+    for i, og in enumerate(tqdm(remaining, desc="Codon alignments")):
+        # Load protein alignment
+        prot_aln = get_protein_alignment(og, msa_dir)
+        if prot_aln is None:
+            stats['no_msa'] += 1
+            continue
+
+        # Back-translate
+        codon_seqs = back_translate_alignment(prot_aln, cds_database, min_species)
+        if codon_seqs is None:
+            stats['too_few_species'] += 1
+            continue
+
+        if len(codon_seqs) == 0:
+            stats['no_cds_match'] += 1
+            continue
+
+        # Write PHYLIP
+        output_path = os.path.join(output_dir, f"{og}.codon.phy")
+        if write_phylip_alignment(codon_seqs, output_path):
+            successful.append(og)
+            batch_completed.add(og)
+            stats['success'] += 1
+
+        # Save checkpoint periodically
+        if (i + 1) % batch_size == 0:
+            checkpoint_manager.save_checkpoint(
+                batch_completed,
+                pd.DataFrame({'Orthogroup': list(batch_completed)}),
+                {'stats': stats}
+            )
+
+    # Final checkpoint
+    checkpoint_manager.save_checkpoint(
+        batch_completed,
+        pd.DataFrame({'Orthogroup': list(batch_completed)}),
+        {'stats': stats}
+    )
+
+    # Summary
+    print()
+    print("=" * 60)
+    print("CODON ALIGNMENT SUMMARY")
+    print("=" * 60)
+    print(f"Total orthogroups: {stats['total']:,}")
+    print(f"No MSA found: {stats['no_msa']:,}")
+    print(f"No CDS match: {stats['no_cds_match']:,}")
+    print(f"Too few species: {stats['too_few_species']:,}")
+    print(f"Successfully processed: {stats['success']:,}")
+    print(f"Success rate: {100*stats['success']/stats['total']:.1f}%")
+
+    return successful, stats
+```
+
+### 4.3 Generate All Codon Alignments
+
+```{python}
+#| eval: false
+
+# Initialize checkpoint manager
+codon_checkpoint = CheckpointManager(
+    PATHS['yn00_checkpoints'],
+    'codon_alignments'
+)
+
+# Generate codon alignments for all orthogroups
+successful_codon_alns, codon_stats = generate_codon_alignments_with_checkpoint(
+    all_al_orthogroups,
+    PATHS['msa_dir'],
+    cds_database,
+    PATHS['codon_alignments'],
+    codon_checkpoint,
+    batch_size=ANALYSIS_CONFIG['checkpoint_interval'],
+    min_species=ANALYSIS_CONFIG['min_species']
+)
+
+print(f"\nCodon alignments saved to: {PATHS['codon_alignments']}")
+print(f"Orthogroups with codon alignments: {len(successful_codon_alns):,}")
+```
+
+## 5. Tier 1: yn00 Pairwise Ka/Ks Analysis
+
+Fast screening across ALL orthogroups with A. laticeps genes.
+
+### 5.1 yn00 Control File and Parsing
+
+```{python}
+def create_yn00_ctl(seqfile: str, outfile: str, ctl_path: str) -> str:
+    """Create yn00 control file."""
+    seqfile_abs = resolve_project_path(seqfile)
+    outfile_abs = resolve_project_path(outfile)
+
+    ctl_content = f"""      seqfile = {seqfile_abs}
+      outfile = {outfile_abs}
+      verbose = 0
+      icode = 0
+      commonf3x4 = 0
+"""
+
+    with open(ctl_path, 'w') as f:
+        f.write(ctl_content)
+
+    return ctl_path
+
+
+def parse_yn00_output_detailed(
+    output_file: str,
+    focal_species: str = None
+) -> Dict:
+    """
+    Parse yn00 output with detailed extraction.
+
+    Extracts:
+    - All pairwise omega values
+    - A. laticeps-specific comparisons
+    - Mean, median, max omega
+
+    Returns dictionary with parsed values.
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    result = {
+        'all_omega': [],
+        'al_omega': [],  # A. laticeps vs others
+        'mean_omega': None,
+        'median_omega': None,
+        'max_omega': None,
+        'al_mean_omega': None,
+        'al_max_omega': None,
+        'n_comparisons': 0,
+        'status': 'failed'
+    }
+
+    if not os.path.exists(output_file):
+        return result
+
+    try:
+        with open(output_file, 'r') as f:
+            content = f.read()
+
+        # Extract sequence names
+        seq_names = []
+        for line in content.split('\n'):
+            if line.strip().startswith('seq.'):
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    seq_names.append(parts[1])
+
+        # Find pairwise omega values from the YN00 matrix
+        # Look for lines with omega values (format varies)
+        omega_values = []
+
+        # Pattern 1: Look for dN/dS or omega values
+        for match in re.finditer(r'omega\s*[=:]\s*(\d+\.?\d*)', content):
+            try:
+                omega = float(match.group(1))
+                if omega < 100:  # Sanity check
+                    omega_values.append(omega)
+            except ValueError:
+                continue
+
+        # Pattern 2: Look for w = value in pairwise results
+        for match in re.finditer(r'\bw\s*=\s*(\d+\.?\d*)', content):
+            try:
+                omega = float(match.group(1))
+                if omega < 100:
+                    omega_values.append(omega)
+            except ValueError:
+                continue
+
+        if omega_values:
+            result['all_omega'] = omega_values
+            result['mean_omega'] = np.mean(omega_values)
+            result['median_omega'] = np.median(omega_values)
+            result['max_omega'] = np.max(omega_values)
+            result['n_comparisons'] = len(omega_values)
+            result['status'] = 'success'
+
+            # Check for focal species comparisons
+            if focal_species in content:
+                result['al_omega'] = omega_values  # Simplified - all values
+                result['al_mean_omega'] = result['mean_omega']
+                result['al_max_omega'] = result['max_omega']
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    return result
+```
+
+### 5.2 Run yn00 on Single Orthogroup
+
+```{python}
+def run_yn00_single(
+    orthogroup: str,
+    codon_aln_dir: str,
+    output_dir: str,
+    focal_species: str = None,
+    timeout: int = 300
+) -> Dict:
+    """
+    Run yn00 on a single orthogroup.
+
+    Returns dictionary with results.
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    codon_path = os.path.join(codon_aln_dir, f"{orthogroup}.codon.phy")
+    codon_path_abs = resolve_project_path(codon_path)
+
+    if not os.path.exists(codon_path_abs):
+        return {'orthogroup': orthogroup, 'status': 'no_alignment'}
+
+    # Create work directory
+    work_dir = os.path.join(output_dir, orthogroup)
+    work_dir_abs = resolve_project_path(work_dir)
+    os.makedirs(work_dir_abs, exist_ok=True)
+
+    # Create control file
+    outfile = os.path.join(work_dir, "yn00_results.txt")
+    outfile_abs = resolve_project_path(outfile)
+    ctl_path = os.path.join(work_dir_abs, "yn00.ctl")
+
+    create_yn00_ctl(codon_path, outfile, ctl_path)
+
+    try:
+        result = subprocess.run(
+            ["conda", "run", "-n", "env_paml", "yn00", ctl_path],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        # Parse results
+        parsed = parse_yn00_output_detailed(outfile_abs, focal_species)
+        parsed['orthogroup'] = orthogroup
+
+        return parsed
+
+    except subprocess.TimeoutExpired:
+        return {'orthogroup': orthogroup, 'status': 'timeout'}
+    except Exception as e:
+        return {'orthogroup': orthogroup, 'status': 'error', 'error': str(e)}
+```
+
+### 5.3 Parallel yn00 Batch Processing
+
+```{python}
+def run_yn00_batch_with_checkpoint(
+    orthogroups: List[str],
+    codon_aln_dir: str,
+    output_dir: str,
+    checkpoint_manager: CheckpointManager,
+    focal_species: str = None,
+    n_workers: int = 8,
+    batch_size: int = 500,
+    timeout: int = 300
+) -> pd.DataFrame:
+    """
+    Run yn00 on multiple orthogroups with checkpoint support.
+
+    Sequential processing (parallel not implemented for simplicity).
+    Saves checkpoint every batch_size orthogroups.
+
+    Returns DataFrame with all results.
+    """
+    if focal_species is None:
+        focal_species = get_focal_species()
+
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    # Load checkpoint
+    completed, partial_df = checkpoint_manager.load_checkpoint()
+    remaining = [og for og in orthogroups if og not in completed]
+
+    print("=" * 60)
+    print("RUNNING yn00 PAIRWISE Ka/Ks ANALYSIS")
+    print("=" * 60)
+    print(f"Total orthogroups: {len(orthogroups):,}")
+    print(f"Already completed: {len(completed):,}")
+    print(f"Remaining: {len(remaining):,}")
+    print()
+
+    # Convert partial_df to list of results
+    results = partial_df.to_dict('records') if len(partial_df) > 0 else []
+    batch_completed = set(completed)
+
+    success = len([r for r in results if r.get('status') == 'success'])
+    failed = len(completed) - success
+
+    for i, og in enumerate(tqdm(remaining, desc="yn00 analysis")):
+        result = run_yn00_single(
+            og, codon_aln_dir, output_dir, focal_species, timeout
+        )
+        results.append(result)
+        batch_completed.add(og)
+
+        if result.get('status') == 'success':
+            success += 1
+        else:
+            failed += 1
+
+        # Save checkpoint periodically
+        if (i + 1) % batch_size == 0:
+            results_df = pd.DataFrame(results)
+            checkpoint_manager.save_checkpoint(
+                batch_completed,
+                results_df,
+                {'success': success, 'failed': failed}
+            )
+
+    # Final save
+    results_df = pd.DataFrame(results)
+    checkpoint_manager.save_checkpoint(
+        batch_completed,
+        results_df,
+        {'success': success, 'failed': failed}
+    )
+
+    print()
+    print(f"Successful: {success:,}")
+    print(f"Failed: {failed:,}")
+
+    return results_df
+```
+
+### 5.4 Run yn00 on All Orthogroups
+
+```{python}
+#| eval: false
+
+# Initialize checkpoint manager
+yn00_checkpoint = CheckpointManager(
+    PATHS['yn00_checkpoints'],
+    'yn00'
+)
+
+# Run yn00 on all orthogroups with codon alignments
+yn00_results_df = run_yn00_batch_with_checkpoint(
+    successful_codon_alns,
+    PATHS['codon_alignments'],
+    PATHS['yn00_results'],
+    yn00_checkpoint,
+    focal_species=FOCAL_SPECIES,
+    n_workers=ANALYSIS_CONFIG['n_workers'],
+    batch_size=ANALYSIS_CONFIG['checkpoint_interval'],
+    timeout=ANALYSIS_CONFIG['yn00_timeout']
+)
+
+# Save final results
+yn00_summary_path = os.path.join(
+    resolve_project_path(PATHS['yn00_results']),
+    'yn00_summary.tsv'
+)
+yn00_results_df.to_csv(yn00_summary_path, sep='\t', index=False)
+print(f"\nyn00 results saved to: {yn00_summary_path}")
+```
+
+## 6. Tier 2: codeml Branch Model Analysis
+
+Detailed analysis for single-copy orthologs to test if A. laticeps lineage shows accelerated evolution.
+
+### 6.1 Prepare Species Tree with Foreground Branch
+
+```{python}
+def mark_foreground_branch(
+    tree_path: str,
+    foreground_species: str,
+    output_path: str
+) -> str:
+    """
+    Create a tree file with the foreground branch marked for codeml.
+
+    In PAML, foreground branches are marked with '#1' after the species name.
+    """
+    tree = Phylo.read(tree_path, "newick")
+
+    for terminal in tree.get_terminals():
+        if terminal.name == foreground_species:
+            terminal.name = f"{foreground_species}#1"
+
+    Phylo.write(tree, output_path, "newick")
+
+    print(f"Marked tree created: {output_path}")
+    print(f"Foreground species: {foreground_species}")
+
+    return output_path
+
+# Create marked tree
+marked_tree_path = os.path.join(
+    resolve_project_path(PATHS['codeml_results']),
+    'species_tree_marked.tre'
+)
+
+if os.path.exists(PATHS['species_tree']):
+    marked_tree = mark_foreground_branch(
+        PATHS['species_tree'],
+        FOCAL_SPECIES,
+        marked_tree_path
+    )
+else:
+    print(f"WARNING: Species tree not found at {PATHS['species_tree']}")
+    marked_tree = None
+```
+
+### 6.2 Prepare Single-Copy Alignments for codeml
+
+```{python}
+def rename_alignment_to_species(
+    codon_file: str,
+    cds_files: Dict[str, str]
+) -> List[str]:
+    """
+    Rename sequences from gene IDs to species names for codeml compatibility.
+
+    codeml requires sequence names to match taxa names in the tree.
+    Deduplicates: if multiple isoforms (e.g. t1/t2) map to the same species,
+    only the first is kept. Updates the PHYLIP sequence count in the header.
+
+    Returns the list of species present in the renamed alignment.
+    """
+    with open(codon_file, 'r') as f:
+        content = f.read()
+
+    lines = content.strip().split('\n')
+    header = lines[0]  # e.g. " 12 1770"
+
+    seen_species = set()
+    new_seq_lines = []
+
+    for line in lines[1:]:
+        if line.strip():
+            parts = line.split(None, 1)
+            if len(parts) >= 2:
+                gene_id = parts[0]
+                sequence = parts[1]
+
+                species_name = None
+                for sp in cds_files.keys():
+                    if gene_id.startswith(sp + '_'):
+                        species_name = sp
+                        break
+
+                if species_name and species_name not in seen_species:
+                    seen_species.add(species_name)
+                    new_seq_lines.append(f"{species_name}  {sequence}")
+                # Skip unrecognised or duplicate-species lines
+
+    # Update sequence count in header to match deduplicated count
+    header_parts = header.split()
+    if len(header_parts) >= 2:
+        header = f" {len(new_seq_lines)} {header_parts[1]}"
+
+    with open(codon_file, 'w') as f:
+        f.write('\n'.join([header] + new_seq_lines) + '\n')
+
+    return list(seen_species)
+```
+
+### 6.3 codeml Control File and Analysis
+
+```{python}
+def create_codeml_ctl(
+    seqfile: str,
+    treefile: str,
+    outfile: str,
+    ctl_path: str,
+    model: int = 0,
+    NSsites: int = 0
+) -> str:
+    """Create codeml control file."""
+    seqfile_abs = resolve_project_path(seqfile)
+    treefile_abs = resolve_project_path(treefile) if not os.path.isabs(treefile) else treefile
+    outfile_abs = resolve_project_path(outfile)
+
+    ctl_content = f"""      seqfile = {seqfile_abs}
+      treefile = {treefile_abs}
+      outfile = {outfile_abs}
+
+      noisy = 0
+      verbose = 1
+      runmode = 0
+
+      seqtype = 1
+      CodonFreq = 2
+      clock = 0
+      aaDist = 0
+      model = {model}
+      NSsites = {NSsites}
+
+      icode = 0
+      fix_kappa = 0
+      kappa = 2
+      fix_omega = 0
+      omega = 0.5
+
+      fix_alpha = 1
+      alpha = 0
+      Malpha = 0
+      ncatG = 4
+
+      getSE = 0
+      RateAncestor = 0
+
+      Small_Diff = 5e-7
+      cleandata = 1
+      fix_blength = 0
+      method = 0
+"""
+
+    with open(ctl_path, 'w') as f:
+        f.write(ctl_content)
+
+    return ctl_path
+
+
+def parse_codeml_likelihood(output_file: str) -> Optional[float]:
+    """Parse log-likelihood from codeml output."""
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    match = re.search(r'lnL.*?(-\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def parse_codeml_omega(output_file: str) -> Optional[float]:
+    """Parse omega from codeml output."""
+    if not os.path.exists(output_file):
+        return None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    match = re.search(r'omega\s*=\s*(\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def parse_codeml_branch_omega(output_file: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Parse foreground and background omega from branch model output.
+
+    Returns (omega_background, omega_foreground)
+    """
+    if not os.path.exists(output_file):
+        return None, None
+
+    with open(output_file, 'r') as f:
+        content = f.read()
+
+    match = re.search(r'w \(dN/dS\) for branches:\s+(\d+\.?\d*)\s+(\d+\.?\d*)', content)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    return None, None
+
+
+def run_codeml_branch_analysis(
+    orthogroup: str,
+    codon_aln_path: str,
+    tree_path: str,
+    output_dir: str,
+    timeout: int = 600
+) -> Dict:
+    """
+    Run codeml branch model analysis on a single orthogroup.
+
+    Runs both null model (M0) and branch model to test for significant
+    difference in omega on the foreground branch.
+    """
+    work_dir = os.path.join(output_dir, orthogroup)
+    work_dir_abs = resolve_project_path(work_dir)
+    os.makedirs(work_dir_abs, exist_ok=True)
+
+    results = {'orthogroup': orthogroup}
+
+    # Run null model (model=0)
+    m0_out = os.path.join(work_dir, "m0_results.txt")
+    m0_out_abs = resolve_project_path(m0_out)
+    m0_ctl = os.path.join(work_dir_abs, "m0.ctl")
+
+    create_codeml_ctl(codon_aln_path, tree_path, m0_out, m0_ctl, model=0, NSsites=0)
+
+    try:
+        subprocess.run(
+            ["conda", "run", "-n", "env_paml", "codeml", m0_ctl],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        lnL_m0 = parse_codeml_likelihood(m0_out_abs)
+        omega_m0 = parse_codeml_omega(m0_out_abs)
+
+        if lnL_m0 is not None:
+            results['lnL_null'] = lnL_m0
+            results['omega_null'] = omega_m0
+        else:
+            results['status'] = 'null_model_failed'
+            return results
+
+    except subprocess.TimeoutExpired:
+        results['status'] = 'timeout_null'
+        return results
+
+    # Run branch model (model=2)
+    branch_out = os.path.join(work_dir, "branch_results.txt")
+    branch_out_abs = resolve_project_path(branch_out)
+    branch_ctl = os.path.join(work_dir_abs, "branch.ctl")
+
+    create_codeml_ctl(codon_aln_path, tree_path, branch_out, branch_ctl, model=2, NSsites=0)
+
+    try:
+        subprocess.run(
+            ["conda", "run", "-n", "env_paml", "codeml", branch_ctl],
+            cwd=work_dir_abs,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        lnL_branch = parse_codeml_likelihood(branch_out_abs)
+        omega_bg, omega_fg = parse_codeml_branch_omega(branch_out_abs)
+
+        if lnL_branch is not None:
+            results['lnL_branch'] = lnL_branch
+            results['omega_foreground'] = omega_fg
+            results['omega_background'] = omega_bg
+
+            # Calculate LRT
+            if lnL_m0 is not None:
+                lrt_stat = 2 * (lnL_branch - lnL_m0)
+                pvalue = 1 - stats.chi2.cdf(lrt_stat, df=1)
+                results['LRT_stat'] = lrt_stat
+                results['pvalue'] = pvalue
+
+            results['status'] = 'success'
+        else:
+            results['status'] = 'branch_model_failed'
+
+    except subprocess.TimeoutExpired:
+        results['status'] = 'timeout_branch'
+
+    return results
+```
+
+### 6.4 Run codeml on Single-Copy Orthologs
+
+```{python}
+#| eval: false
+
+def run_codeml_batch(
+    orthogroups: List[str],
+    codon_aln_dir: str,
+    tree_path: str,
+    output_dir: str,
+    cds_files: Dict[str, str],
+    timeout: int = 600
+) -> pd.DataFrame:
+    """Run codeml on multiple single-copy orthogroups."""
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    print("=" * 60)
+    print("RUNNING codeml BRANCH MODEL ANALYSIS")
+    print("=" * 60)
+    print(f"Single-copy orthogroups: {len(orthogroups):,}")
+    print(f"Foreground species: {FOCAL_SPECIES}")
+    print()
+
+    results = []
+
+    for og in tqdm(orthogroups, desc="codeml analysis"):
+        codon_path = os.path.join(codon_aln_dir, f"{og}.codon.phy")
+        codon_path_abs = resolve_project_path(codon_path)
+
+        if not os.path.exists(codon_path_abs):
+            # Generate codon alignment if missing
+            prot_aln = get_protein_alignment(og, PATHS['msa_dir'])
+            if prot_aln is None:
+                continue
+
+            # Use min_species=4 here: OrthoFinder already guarantees single-copy
+            # status, and the tree will be pruned to match available species.
+            codon_seqs = back_translate_alignment(prot_aln, cds_database, min_species=4)
+            if codon_seqs is None:
+                continue
+
+            write_phylip_alignment(codon_seqs, codon_path)
+
+        # Rename to species names for codeml; deduplicate isoforms.
+        # Returns the list of species actually present in the alignment.
+        species_in_aln = rename_alignment_to_species(codon_path_abs, cds_files)
+
+        # Prune the marked tree to only species present in this alignment.
+        # codeml requires the tree taxa to exactly match the alignment taxa.
+        og_work_dir = resolve_project_path(os.path.join(output_dir, og))
+        os.makedirs(og_work_dir, exist_ok=True)
+        pruned_tree_path = os.path.join(og_work_dir, "pruned_tree.tre")
+
+        base_tree = Phylo.read(tree_path, "newick")
+        # Strip the '#1' foreground marker to get plain species names for comparison
+        aln_species_plain = {s.replace('#1', '') for s in species_in_aln}
+        # Snapshot names to remove BEFORE modifying the tree — pruning while
+        # iterating get_terminals() shifts the tree structure mid-loop and
+        # raises "can't find a matching target below this root".
+        terminals_to_remove = [
+            t.name for t in base_tree.get_terminals()
+            if (t.name or '').replace('#1', '') not in aln_species_plain
+        ]
+        for name in terminals_to_remove:
+            try:
+                base_tree.prune(name)
+            except ValueError:
+                pass  # Already removed as a side-effect of an earlier prune
+        Phylo.write(base_tree, pruned_tree_path, "newick")
+
+        # Run analysis with the per-OG pruned tree
+        result = run_codeml_branch_analysis(
+            og, codon_path, pruned_tree_path, output_dir, timeout
+        )
+        results.append(result)
+
+    results_df = pd.DataFrame(results)
+
+    # Handle empty results (e.g., when orthogroups list is empty)
+    if results_df.empty or 'status' not in results_df.columns:
+        print("\nNo results generated (empty orthogroups list or no status column).")
+        return results_df
+
+    # Summary
+    success = len(results_df[results_df['status'] == 'success'])
+    print()
+    print(f"Successful: {success:,}")
+    print(f"Failed: {len(results_df) - success:,}")
+
+    return results_df
+
+# Run codeml on single-copy orthologs
+if marked_tree:
+    codeml_results_df = run_codeml_batch(
+        single_copy_orthogroups,
+        PATHS['codon_alignments'],
+        marked_tree_path,
+        PATHS['codeml_results'],
+        CDS_FILES,
+        timeout=ANALYSIS_CONFIG['codeml_timeout']
+    )
+
+    # Save results
+    codeml_summary_path = os.path.join(
+        resolve_project_path(PATHS['codeml_results']),
+        'codeml_summary.tsv'
+    )
+    codeml_results_df.to_csv(codeml_summary_path, sep='\t', index=False)
+    print(f"\ncodeml results saved to: {codeml_summary_path}")
+else:
+    print("Skipping codeml analysis (marked tree not available)")
+    codeml_results_df = pd.DataFrame()
+```
+
+## 7. Results Integration and Classification
+
+### 7.1 Classify Selection Type
+
+```{python}
+def classify_selection(
+    omega: float,
+    pvalue: Optional[float] = None,
+    pvalue_threshold: float = 0.05
+) -> str:
+    """
+    Classify selection type based on omega value and p-value.
+
+    Returns selection category string.
+    """
+    if omega is None or np.isnan(omega):
+        return 'Unknown'
+
+    if omega > 1.0:
+        if pvalue is not None and pvalue < pvalue_threshold:
+            return 'Positive_significant'
+        else:
+            return 'Positive_tentative'
+    elif omega > 0.5:
+        return 'Relaxed_purifying'
+    elif omega > 0.1:
+        return 'Moderate_purifying'
+    else:
+        return 'Strong_purifying'
+
+
+def create_master_results(
+    yn00_df: pd.DataFrame,
+    codeml_df: pd.DataFrame,
+    orthogroups_df: pd.DataFrame,
+    focal_species: str
+) -> pd.DataFrame:
+    """
+    Create master results table combining yn00 and codeml results.
+    """
+    print("=" * 60)
+    print("CREATING MASTER RESULTS TABLE")
+    print("=" * 60)
+
+    # Start with yn00 results
+    master = yn00_df.copy()
+
+    # Normalize column name to 'Orthogroup' (yn00 results use lowercase 'orthogroup')
+    if 'Orthogroup' not in master.columns and 'orthogroup' in master.columns:
+        master = master.rename(columns={'orthogroup': 'Orthogroup'})
+
+    if 'mean_omega' in master.columns:
+        master['selection_yn00'] = master['mean_omega'].apply(
+            lambda x: classify_selection(x)
+        )
+
+    # Add codeml results for single-copy
+    if len(codeml_df) > 0:
+        codeml_cols = ['orthogroup', 'omega_foreground', 'omega_background',
+                       'LRT_stat', 'pvalue', 'status']
+        codeml_subset = codeml_df[[c for c in codeml_cols if c in codeml_df.columns]].copy()
+        codeml_subset = codeml_subset.rename(columns={'orthogroup': 'Orthogroup'})
+
+        # Rename columns to avoid conflicts
+        for col in codeml_subset.columns:
+            if col != 'Orthogroup':
+                codeml_subset = codeml_subset.rename(columns={col: f'codeml_{col}'})
+
+        master = master.merge(codeml_subset, on='Orthogroup', how='left')
+
+        # Add codeml selection classification
+        if 'codeml_omega_foreground' in master.columns:
+            master['selection_codeml'] = master.apply(
+                lambda row: classify_selection(
+                    row.get('codeml_omega_foreground'),
+                    row.get('codeml_pvalue')
+                ) if pd.notna(row.get('codeml_omega_foreground')) else None,
+                axis=1
+            )
+
+    # Add gene information
+    focal_col = None
+    for col in orthogroups_df.columns:
+        if focal_species.lower() in col.lower():
+            focal_col = col
+            break
+
+    if focal_col:
+        gene_info = orthogroups_df[['Orthogroup', focal_col]].copy()
+        gene_info = gene_info.rename(columns={focal_col: 'focal_genes'})
+        master = master.merge(gene_info, on='Orthogroup', how='left')
+
+    print(f"Master table: {len(master):,} orthogroups")
+
+    if 'selection_yn00' in master.columns:
+        print("\nyn00 selection categories:")
+        print(master['selection_yn00'].value_counts())
+
+    if 'selection_codeml' in master.columns:
+        print("\ncodeml selection categories:")
+        print(master['selection_codeml'].value_counts())
+
+    return master
+```
+
+### 7.2 Extract Positive Selection Gene Lists
+
+```{python}
+def extract_positive_selection_genes(
+    master_df: pd.DataFrame,
+    output_dir: str,
+    pvalue_threshold: float = 0.05
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Extract genes under positive selection.
+
+    Returns:
+    - DataFrame of positively selected genes (codeml significant)
+    - DataFrame of potentially positively selected (yn00 omega > 1)
+    """
+    output_dir_abs = resolve_project_path(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+
+    print("=" * 60)
+    print("EXTRACTING POSITIVE SELECTION GENES")
+    print("=" * 60)
+
+    # Significant positive selection (codeml)
+    significant_mask = (
+        (master_df.get('codeml_omega_foreground', pd.Series()) > 1.0) &
+        (master_df.get('codeml_pvalue', pd.Series()) < pvalue_threshold)
+    )
+
+    if significant_mask.any():
+        significant_df = master_df[significant_mask].copy()
+        significant_path = os.path.join(output_dir_abs, 'positive_selection_significant.tsv')
+        significant_df.to_csv(significant_path, sep='\t', index=False)
+        print(f"Significant positive selection (codeml): {len(significant_df):,}")
+        print(f"  Saved to: {significant_path}")
+    else:
+        significant_df = pd.DataFrame()
+        print("Significant positive selection (codeml): 0")
+
+    # Tentative positive selection (yn00 omega > 1)
+    tentative_mask = master_df.get('max_omega', pd.Series()) > 1.0
+
+    if tentative_mask.any():
+        tentative_df = master_df[tentative_mask].copy()
+        tentative_path = os.path.join(output_dir_abs, 'positive_selection_tentative.tsv')
+        tentative_df.to_csv(tentative_path, sep='\t', index=False)
+        print(f"Tentative positive selection (yn00): {len(tentative_df):,}")
+        print(f"  Saved to: {tentative_path}")
+    else:
+        tentative_df = pd.DataFrame()
+        print("Tentative positive selection (yn00): 0")
+
+    # Extract gene IDs
+    gene_ids = []
+    for _, row in significant_df.iterrows():
+        if pd.notna(row.get('focal_genes')):
+            genes = str(row['focal_genes']).split(', ')
+            gene_ids.extend(genes)
+
+    if gene_ids:
+        gene_list_path = os.path.join(output_dir_abs, 'positive_selection_gene_ids.txt')
+        with open(gene_list_path, 'w') as f:
+            for gid in gene_ids:
+                f.write(f"{gid}\n")
+        print(f"\nGene IDs saved to: {gene_list_path}")
+        print(f"Total genes: {len(gene_ids)}")
+
+    return significant_df, tentative_df
+```
+
+### 7.3 Run Integration
+
+```{python}
+#| eval: false
+
+# Create master results table
+master_results = create_master_results(
+    yn00_results_df,
+    codeml_results_df,
+    orthogroups_df,
+    FOCAL_SPECIES
+)
+
+# Save master table
+master_path = os.path.join(
+    resolve_project_path(PATHS['summary_dir']),
+    'genome_wide_selection_master.tsv'
+)
+master_results.to_csv(master_path, sep='\t', index=False)
+print(f"\nMaster results saved to: {master_path}")
+
+# Extract positive selection genes
+significant_genes, tentative_genes = extract_positive_selection_genes(
+    master_results,
+    PATHS['summary_dir']
+)
+```
+
+#### Out[24]: ✓ Done 7.43s
+```
+============================================================
+CREATING MASTER RESULTS TABLE
+============================================================
+Master table: 32,112 orthogroups
+
+yn00 selection categories:
+selection_yn00
+Moderate_purifying    14558
+Unknown                7371
+Relaxed_purifying      6132
+Strong_purifying       2162
+Positive_tentative     1889
+Name: count, dtype: int64
+
+codeml selection categories:
+selection_codeml
+Moderate_purifying      6
+Strong_purifying        6
+Relaxed_purifying       5
+Positive_tentative      2
+Positive_significant    1
+Name: count, dtype: int64
+
+
+Master results saved to: /home/jovyan/Outputs/GenomewideSelection/summary/genome_wide_selection_master.tsv
+============================================================
+EXTRACTING POSITIVE SELECTION GENES
+============================================================
+Significant positive selection (codeml): 1
+  Saved to: /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_significant.tsv
+
+Tentative positive selection (yn00): 14,920
+  Saved to: /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_tentative.tsv
+
+Gene IDs saved to: /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_gene_ids.txt
+Total genes: 1
+```
+
+## 8. Visualization
+
+### 8.1 Genome-Wide Ka/Ks Distribution
+
+```{python}
+#| eval: false
+
+def plot_kaks_distribution_genomewide(
+    df: pd.DataFrame,
+    output_dir: str,
+    omega_col: str = 'mean_omega'
+):
+    """Plot genome-wide Ka/Ks distribution."""
+    output_dir_abs = resolve_project_path(output_dir)
+
+    if omega_col not in df.columns:
+        print(f"Column {omega_col} not found")
+        return
+
+    omega_values = df[omega_col].dropna()
+    omega_values = omega_values[omega_values < 5]  # Cap at 5
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Linear scale
+    ax = axes[0]
+    ax.hist(omega_values, bins=50, color='steelblue', edgecolor='white', alpha=0.7)
+    ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='omega = 1')
+    ax.axvline(x=0.5, color='orange', linestyle='--', linewidth=1.5, label='omega = 0.5')
+    ax.axvline(x=0.1, color='green', linestyle='--', linewidth=1.5, label='omega = 0.1')
+    ax.set_xlabel('Ka/Ks (omega)', fontsize=12)
+    ax.set_ylabel('Number of orthogroups', fontsize=12)
+    ax.set_title('Genome-Wide Ka/Ks Distribution', fontsize=14, fontweight='bold')
+    ax.legend()
+
+    # Log scale
+    ax = axes[1]
+    ax.hist(omega_values[omega_values > 0], bins=50, color='steelblue',
+            edgecolor='white', alpha=0.7)
+    ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='omega = 1')
+    ax.set_xscale('log')
+    ax.set_xlabel('Ka/Ks (omega) - log scale', fontsize=12)
+    ax.set_ylabel('Number of orthogroups', fontsize=12)
+    ax.set_title('Genome-Wide Ka/Ks Distribution (log scale)', fontsize=14, fontweight='bold')
+    ax.legend()
+
+    plt.tight_layout()
+
+    output_path = os.path.join(output_dir_abs, 'kaks_distribution_genomewide')
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+    # Statistics
+    print(f"\nStatistics (n={len(omega_values):,}):")
+    print(f"  Mean omega: {omega_values.mean():.4f}")
+    print(f"  Median omega: {omega_values.median():.4f}")
+    print(f"  omega > 1: {(omega_values > 1).sum():,} ({100*(omega_values > 1).mean():.2f}%)")
+    print(f"  omega < 0.1: {(omega_values < 0.1).sum():,} ({100*(omega_values < 0.1).mean():.2f}%)")
+
+plot_kaks_distribution_genomewide(master_results, PATHS['figures_dir'])
+```
+
+### 8.2 Volcano Plot (codeml Branch Model)
+
+```{python}
+#| eval: false
+
+def plot_volcano_branch_model(
+    df: pd.DataFrame,
+    output_dir: str,
+    pvalue_threshold: float = 0.05
+):
+    """Plot volcano plot for codeml branch model results."""
+    output_dir_abs = resolve_project_path(output_dir)
+
+    # Filter to rows with codeml results
+    if 'codeml_omega_foreground' not in df.columns or 'codeml_pvalue' not in df.columns:
+        print("No codeml results available for volcano plot (columns missing)")
+        return
+
+    codeml_mask = df['codeml_omega_foreground'].notna() & df['codeml_pvalue'].notna()
+    codeml_df = df[codeml_mask].copy()
+
+    if len(codeml_df) == 0:
+        print("No codeml results available for volcano plot")
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Calculate -log10(pvalue)
+    codeml_df['neg_log_pval'] = -np.log10(codeml_df['codeml_pvalue'])
+    codeml_df['log2_omega'] = np.log2(codeml_df['codeml_omega_foreground'])
+
+    # Color by significance
+    significant = (codeml_df['codeml_pvalue'] < pvalue_threshold) & (codeml_df['codeml_omega_foreground'] > 1)
+
+    # Plot non-significant
+    ax.scatter(
+        codeml_df[~significant]['log2_omega'],
+        codeml_df[~significant]['neg_log_pval'],
+        c='gray', alpha=0.5, s=50, label='Not significant'
+    )
+
+    # Plot significant
+    ax.scatter(
+        codeml_df[significant]['log2_omega'],
+        codeml_df[significant]['neg_log_pval'],
+        c='red', alpha=0.8, s=80, label=f'Positive selection (p < {pvalue_threshold})'
+    )
+
+    # Add threshold lines
+    ax.axhline(y=-np.log10(pvalue_threshold), color='blue', linestyle='--', alpha=0.5)
+    ax.axvline(x=0, color='gray', linestyle='-', alpha=0.3)
+
+    ax.set_xlabel('log2(omega foreground)', fontsize=12)
+    ax.set_ylabel('-log10(p-value)', fontsize=12)
+    ax.set_title(f'Volcano Plot: Branch Model Selection on {FOCAL_SPECIES}\n(Single-Copy Orthologs)',
+                fontsize=14, fontweight='bold')
+    ax.legend(fontsize=10)
+
+    plt.tight_layout()
+
+    output_path = os.path.join(output_dir_abs, 'volcano_plot_single_copy')
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+    print(f"\nSignificant positive selection: {significant.sum()}")
+
+plot_volcano_branch_model(master_results, PATHS['figures_dir'])
+```
+
+### 8.3 Selection Categories Summary
+
+```{python}
+#| eval: false
+
+def plot_selection_categories(
+    df: pd.DataFrame,
+    output_dir: str
+):
+    """Plot selection categories bar chart."""
+    output_dir_abs = resolve_project_path(output_dir)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # yn00 categories
+    if 'selection_yn00' in df.columns:
+        ax = axes[0]
+        counts = df['selection_yn00'].value_counts()
+        colors = {
+            'Positive_significant': 'red',
+            'Positive_tentative': 'salmon',
+            'Relaxed_purifying': 'orange',
+            'Moderate_purifying': 'yellow',
+            'Strong_purifying': 'green',
+            'Unknown': 'gray'
+        }
+        bar_colors = [colors.get(c, 'gray') for c in counts.index]
+
+        ax.bar(range(len(counts)), counts.values, color=bar_colors, edgecolor='black')
+        ax.set_xticks(range(len(counts)))
+        ax.set_xticklabels(counts.index, rotation=45, ha='right')
+        ax.set_ylabel('Number of orthogroups', fontsize=12)
+        ax.set_title('Selection Categories (yn00 pairwise)', fontsize=14, fontweight='bold')
+
+        for i, v in enumerate(counts.values):
+            ax.text(i, v + 50, str(v), ha='center', fontsize=10)
+
+    # codeml categories
+    if 'selection_codeml' in df.columns:
+        ax = axes[1]
+        codeml_df = df[df['selection_codeml'].notna()]
+
+        if len(codeml_df) > 0:
+            counts = codeml_df['selection_codeml'].value_counts()
+            bar_colors = [colors.get(c, 'gray') for c in counts.index]
+
+            ax.bar(range(len(counts)), counts.values, color=bar_colors, edgecolor='black')
+            ax.set_xticks(range(len(counts)))
+            ax.set_xticklabels(counts.index, rotation=45, ha='right')
+            ax.set_ylabel('Number of orthogroups', fontsize=12)
+            ax.set_title('Selection Categories (codeml branch model)\nSingle-Copy Orthologs',
+                        fontsize=14, fontweight='bold')
+
+            for i, v in enumerate(counts.values):
+                ax.text(i, v + 1, str(v), ha='center', fontsize=10)
+
+    plt.tight_layout()
+
+    output_path = os.path.join(output_dir_abs, 'selection_categories')
+    plt.savefig(f"{output_path}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_path}.pdf", bbox_inches='tight')
+    plt.show()
+
+    print(f"Figure saved to: {output_path}.png/pdf")
+
+plot_selection_categories(master_results, PATHS['figures_dir'])
+```
+
+## 9. Summary and Export
+
+### 9.1 Generate Analysis Summary
+
+```{python}
+#| eval: false
+
+def generate_analysis_summary(
+    master_df: pd.DataFrame,
+    yn00_df: pd.DataFrame,
+    codeml_df: pd.DataFrame,
+    output_dir: str
+) -> Dict:
+    """Generate comprehensive analysis summary."""
+    output_dir_abs = resolve_project_path(output_dir)
+
+    summary = {
+        'analysis_info': {
+            'tool': 'PAML (yn00, codeml)',
+            'focal_species': FOCAL_SPECIES,
+            'analysis_date': datetime.now().isoformat(),
+            'orthofinder_version': get_version(),
+            'total_orthogroups': len(master_df),
+        },
+        'yn00_results': {
+            'orthogroups_analyzed': len(yn00_df[yn00_df['status'] == 'success']) if 'status' in yn00_df.columns else len(yn00_df),
+            'positive_selection_tentative': len(master_df[master_df.get('max_omega', 0) > 1]),
+        },
+        'codeml_results': {
+            'single_copy_analyzed': len(codeml_df) if len(codeml_df) > 0 else 0,
+        },
+        'selection_summary': {}
+    }
+
+    # Add selection counts
+    if 'selection_yn00' in master_df.columns:
+        for cat in master_df['selection_yn00'].dropna().unique():
+            summary['selection_summary'][f'yn00_{cat}'] = int((master_df['selection_yn00'] == cat).sum())
+
+    if 'selection_codeml' in master_df.columns:
+        for cat in master_df['selection_codeml'].dropna().unique():
+            summary['selection_summary'][f'codeml_{cat}'] = int((master_df['selection_codeml'] == cat).sum())
+
+    # Save summary
+    summary_path = os.path.join(output_dir_abs, 'analysis_summary.json')
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    print("=" * 60)
+    print("ANALYSIS SUMMARY")
+    print("=" * 60)
+    print(json.dumps(summary, indent=2))
+    print(f"\nSummary saved to: {summary_path}")
+
+    return summary
+
+analysis_summary = generate_analysis_summary(
+    master_results,
+    yn00_results_df,
+    codeml_results_df,
+    PATHS['summary_dir']
+)
+```
+
+### 9.2 Final Output
+
+```{python}
+#| eval: false
+
+print("=" * 60)
+print("GENOME-WIDE SELECTION SCREENING COMPLETE")
+print("=" * 60)
+print()
+print("Output files:")
+print(f"  Master results: {PATHS['summary_dir']}/genome_wide_selection_master.tsv")
+print(f"  Positive selection (significant): {PATHS['summary_dir']}/positive_selection_significant.tsv")
+print(f"  Positive selection (tentative): {PATHS['summary_dir']}/positive_selection_tentative.tsv")
+print(f"  Gene IDs: {PATHS['summary_dir']}/positive_selection_gene_ids.txt")
+print(f"  Analysis summary: {PATHS['summary_dir']}/analysis_summary.json")
+print()
+print("Figures:")
+print(f"  Ka/Ks distribution: {PATHS['figures_dir']}/kaks_distribution_genomewide.pdf")
+print(f"  Volcano plot: {PATHS['figures_dir']}/volcano_plot_single_copy.pdf")
+print(f"  Selection categories: {PATHS['figures_dir']}/selection_categories.pdf")
+```
+
+#### Out[29]: ✓ Done 0.0s
+```
+============================================================
+GENOME-WIDE SELECTION SCREENING COMPLETE
+============================================================
+
+Output files:
+  Master results: /home/jovyan/Outputs/GenomewideSelection/summary/genome_wide_selection_master.tsv
+  Positive selection (significant): /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_significant.tsv
+  Positive selection (tentative): /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_tentative.tsv
+  Gene IDs: /home/jovyan/Outputs/GenomewideSelection/summary/positive_selection_gene_ids.txt
+  Analysis summary: /home/jovyan/Outputs/GenomewideSelection/summary/analysis_summary.json
+
+Figures:
+  Ka/Ks distribution: /home/jovyan/Outputs/GenomewideSelection/figures/kaks_distribution_genomewide.pdf
+  Volcano plot: /home/jovyan/Outputs/GenomewideSelection/figures/volcano_plot_single_copy.pdf
+  Selection categories: /home/jovyan/Outputs/GenomewideSelection/figures/selection_categories.pdf
+
+```
+
+---
+
+## Quick Start (Resume from Checkpoint)
+
+If the analysis was interrupted, simply re-run the cells. The checkpoint system will automatically:
+1. Load progress from previous run
+2. Skip completed orthogroups
+3. Continue from where it left off
+
+To start fresh, run:
+```python
+CheckpointManager(PATHS['yn00_checkpoints'], 'yn00').clear_checkpoint()
+CheckpointManager(PATHS['yn00_checkpoints'], 'codon_alignments').clear_checkpoint()
+```
+
+---
+
+Understanding Ka/Ks (ω) Selection Categories: The Biology of Molecular Evolution
+
+What is Ka/Ks (Omega, ω, dN/dS)?
+
+The Ka/Ks ratio is one of the most powerful metrics in molecular evolution for detecting natural selection
+at the protein level. Let me break down what it measures:
+┌───────────┬────────────────────────────────────────────────────────────────────────┐
+│   Term    │                               Definition                               │
+├───────────┼────────────────────────────────────────────────────────────────────────┤
+│ Ka (dN)   │ Nonsynonymous substitution rate – mutations that change amino acids    │
+├───────────┼────────────────────────────────────────────────────────────────────────┤
+│ Ks (dS)   │ Synonymous substitution rate – mutations that don't change amino acids │
+├───────────┼────────────────────────────────────────────────────────────────────────┤
+│ ω (omega) │ Ka/Ks = The ratio of these two rates                                   │
+└───────────┴────────────────────────────────────────────────────────────────────────┘
+★ Insight ─────────────────────────────────────
+Why synonymous substitutions matter as a baseline:
+Synonymous mutations don't change the protein, so evolution treats them as mostly neutral. They accumulate
+at a "background" rate determined by mutation alone. Nonsynonymous mutations, however, change the
+protein—so natural selection either favors them, removes them, or ignores them. By comparing these rates,
+we can detect the fingerprint of selection.
+─────────────────────────────────────────────────
+
+---
+The Four Selection Categories in Your Notebook
+
+1. Positive Selection (ω > 1.0)
+
+"More amino acid changes than expected by chance"
+
+Biological Meaning:
+
+When ω > 1, nonsynonymous mutations are accumulating faster than synonymous mutations. This means
+evolution is actively favoring amino acid changes—the protein is being pushed to change, not stay the
+same.
+
+What's happening at the molecular level:
+
+- New amino acid variants confer a fitness advantage
+- Selection actively drives diversification of the protein sequence
+- The ancestral protein function is being modified or adapted
+
+Classic biological examples:
+Gene/System: MHC/HLA immune genes
+Why Positive Selection?: Pathogens constantly evolve to escape immune recognition, so hosts must
+counter-adapt
+(https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004627)
+────────────────────────────────────────
+Gene/System: Antibiotic resistance genes
+Why Positive Selection?: Bacteria under antibiotic pressure rapidly evolve resistance
+────────────────────────────────────────
+Gene/System: Sperm-egg recognition proteins
+Why Positive Selection?: Sexual conflict and species barriers drive rapid divergence
+────────────────────────────────────────
+Gene/System: Viral surface proteins
+Why Positive Selection?: Escape from host antibody recognition
+────────────────────────────────────────
+Gene/System: Venom toxins
+Why Positive Selection?: Prey-predator arms races
+For Aspiorhynchus laticeps (your study):
+
+Genes with ω > 1 in the A. laticeps lineage may represent adaptations to its unique ecological niche.
+Given that this is a specialized fish species, positive selection could indicate:
+- Adaptations to specific environmental conditions
+- Dietary specializations
+- Reproductive adaptations
+- Response to local pathogens
+
+★ Insight ─────────────────────────────────────
+The p-value matters! Your notebook distinguishes:
+- Positive_significant (ω > 1, p < 0.05): Statistically confident positive selection
+- Positive_tentative (ω > 1, but no significant test): Could be positive selection, but might also be
+noise or relaxed constraint
+
+The codeml branch model uses a Likelihood Ratio Test (LRT) comparing the null model (same ω for all
+branches) vs. the alternative (different ω for foreground branch). This statistical rigor is essential
+because genome-wide screens will produce false positives by chance.
+─────────────────────────────────────────────────
+
+---
+2. Relaxed Purifying Selection (0.5 < ω < 1.0)
+
+"Weak conservation—the protein tolerates some amino acid changes"
+
+Biological Meaning:
+
+The protein is still under some constraint (ω < 1), but it's relatively weak. Many amino acid changes are
+tolerated, suggesting the protein:
+- Has regions that don't critically affect function
+- May be evolving toward a new function
+- Experiences variable selective pressure
+
+What's happening at the molecular level:
+
+- Some purifying selection removes deleterious mutations
+- But the constraint is not strong—many mutations are "nearly neutral"
+- The protein structure/function can accommodate variation
+
+Biological scenarios:
+┌───────────────────────────────────┬──────────────────────────────────────────────────┐
+│             Scenario              │                   Explanation                    │
+├───────────────────────────────────┼──────────────────────────────────────────────────┤
+│ Proteins with redundant functions │ Multiple paralogs can compensate for each other  │
+├───────────────────────────────────┼──────────────────────────────────────────────────┤
+│ Non-essential accessory proteins  │ Loss-of-function is tolerated                    │
+├───────────────────────────────────┼──────────────────────────────────────────────────┤
+│ Transition states                 │ A gene shifting from one function to another     │
+├───────────────────────────────────┼──────────────────────────────────────────────────┤
+│ Regulatory regions                │ Some flexibility in protein-protein interactions │
+└───────────────────────────────────┴──────────────────────────────────────────────────┘
+Interpretation caution:
+
+A gene-wide ω of ~0.7 could represent:
+1. Uniformly relaxed constraint across all sites
+2. A mixture of strongly constrained sites + positively selected sites (averaging out)
+3. Recent release from constraint (e.g., after gene duplication)
+
+---
+3. Moderate Purifying Selection (0.1 < ω < 0.5)
+
+"Most amino acid changes are harmful and removed"
+
+Biological Meaning:
+
+This is the most common category for functional genes. The protein has an important function that must be
+preserved, but it's not under the extreme constraint seen in "strong purifying."
+
+What's happening at the molecular level:
+
+- Most nonsynonymous mutations reduce fitness and are removed
+- The protein has a defined function that selection maintains
+- Some flexibility exists for fine-tuning or neutral variation
+
+Typical genes in this category:
+┌───────────────────────┬───────────────────────────────────────────────────────┐
+│       Gene Type       │               Why Moderate Constraint?                │
+├───────────────────────┼───────────────────────────────────────────────────────┤
+│ Metabolic enzymes     │ Core function preserved, but some residues can vary   │
+├───────────────────────┼───────────────────────────────────────────────────────┤
+│ Signaling proteins    │ Critical domains conserved, linkers flexible          │
+├───────────────────────┼───────────────────────────────────────────────────────┤
+│ Transcription factors │ DNA-binding domain constrained, other regions less so │
+├───────────────────────┼───────────────────────────────────────────────────────┤
+│ Structural proteins   │ Core structure essential, surface more variable       │
+└───────────────────────┴───────────────────────────────────────────────────────┘
+★ Insight ─────────────────────────────────────
+Your notebook results show this is dominant:
+Moderate_purifying    14,558 orthogroups
+This is exactly what we expect! Most genes encode functional proteins that must work properly, so
+purifying selection is the default. The distribution of ω values in any genome typically shows a strong
+peak below 0.5 with a long right tail.
+─────────────────────────────────────────────────
+
+---
+4. Strong Purifying Selection (ω < 0.1)
+
+"The protein is almost frozen—nearly all amino acid changes are lethal"
+
+Biological Meaning:
+
+These are the most essential, ancient, conserved proteins. Virtually any amino acid change disrupts
+function so severely that it's immediately removed by selection.
+
+What's happening at the molecular level:
+
+- The protein structure/function is optimized and cannot tolerate changes
+- Often these proteins interact with many partners (highly connected in networks)
+- Deep evolutionary conservation—sequence unchanged for hundreds of millions of years
+
+Classic examples:
+Gene: Histone H4
+ω value: ~0.01
+Why So Conserved?: Packages DNA; interacts with hundreds of proteins; identical across vertebrates
+────────────────────────────────────────
+Gene: Histone H3
+ω value: ~0.02
+Why So Conserved?: Core chromatin component; epigenetic regulation
+────────────────────────────────────────
+Gene: Ribosomal proteins
+ω value: 0.02–0.08
+Why So Conserved?: Protein synthesis machinery; any defect is lethal
+────────────────────────────────────────
+Gene: Cytochrome c
+ω value: ~0.02
+Why So Conserved?: Electron transport; shape and charge critical
+────────────────────────────────────────
+Gene: Ubiquitin
+ω value: ~0.01
+Why So Conserved?: Protein degradation tag; must be recognized universally
+────────────────────────────────────────
+Gene: ATP synthase subunits
+ω value: 0.02–0.05
+Why So Conserved?: Energy production; ancient conserved machinery
+From the research on https://academic.oup.com/mbe/article/19/5/689/1067813: "The amino acid sequence
+similarity among histone H4 genes is maintained primarily by strong purifying selection... H4 proteins
+from distantly related species (human, trout, chicken) are identical."
+
+What it means for your study:
+
+Your 2,162 orthogroups with strong purifying selection likely include:
+- Core cellular machinery (translation, transcription, metabolism)
+- DNA replication and repair proteins
+- Mitochondrial function proteins
+- Cytoskeletal proteins
+
+---
+Visual Summary: The Selection Spectrum
+
+        DELETERIOUS                NEUTRAL              ADVANTAGEOUS
+           ←────────────────────────────────────────────────→
+
+ω:    0.0   0.1         0.5              1.0              2.0+
+     │     │           │                │                 │
+     ▼     ▼           ▼                ▼                 ▼
+  ┌──────┬───────────┬────────────────┬─────────────────────┐
+  │STRONG│ MODERATE  │    RELAXED     │ POSITIVE SELECTION  │
+  │PURIF.│ PURIFYING │   PURIFYING    │                     │
+  └──────┴───────────┴────────────────┴─────────────────────┘
+
+  Histones   Metabolic    Accessory     Immune genes
+  Ribosomal  enzymes      proteins      Venom toxins
+  Cytochrome Transcription              Reproductive
+  c          factors                    proteins
+
+---
+Why These Specific Thresholds?
+
+The thresholds (0.1, 0.5, 1.0) in your notebook are conventional cutoffs in the field, though they're
+somewhat arbitrary:
+┌───────────┬──────────────────────────────────────────────────────────────────────────┐
+│ Threshold │                                Rationale                                 │
+├───────────┼──────────────────────────────────────────────────────────────────────────┤
+│ ω = 1.0   │ Theoretical boundary: above = positive, below = purifying                │
+├───────────┼──────────────────────────────────────────────────────────────────────────┤
+│ ω = 0.5   │ Empirical: most genes fall below this; above suggests relaxed constraint │
+├───────────┼──────────────────────────────────────────────────────────────────────────┤
+│ ω = 0.1   │ Extreme conservation: only "housekeeping" genes consistently this low    │
+└───────────┴──────────────────────────────────────────────────────────────────────────┘
+★ Insight ─────────────────────────────────────
+Important caveats from the literature:
+
+1. Site heterogeneity: A gene with overall ω = 0.3 might have 95% of sites at ω = 0.1 and 5% at ω = 2.0.
+The https://pmc.ncbi.nlm.nih.gov/articles/PMC1461088/ address this.
+2. Branch heterogeneity: Selection pressure changes over time. The branch model in your Tier 2 analysis
+specifically tests if ω differs on the A. laticeps lineage.
+3. Statistical power: Detecting ω > 1 requires strong signal. If only a few sites are under positive
+selection while most are conserved, the average ω stays below 1.
+─────────────────────────────────────────────────
+
+---
+Connecting to Your Notebook Results
+
+From your notebook output:
+
+yn00 selection categories:
+Moderate_purifying    14,558  ← Most genes (expected)
+Unknown                7,371  ← Analysis issues
+Relaxed_purifying      6,132  ← Some flexibility
+Strong_purifying       2,162  ← Essential genes
+Positive_tentative     1,889  ← Candidates for adaptation!
+
+codeml selection categories (single-copy only):
+Positive_significant       1  ← High-confidence adaptive evolution
+
+This distribution is biologically realistic:
+- The genome is dominated by genes under purifying selection (maintaining function)
+- A subset shows relaxed constraint (flexibility, redundancy)
+- A small fraction shows positive selection (adaptation)
+- Only 1 single-copy ortholog showed statistically significant positive selection in the A. laticeps
+lineage
+
+---
+Sources
+
+- https://en.wikipedia.org/wiki/Ka/Ks_ratio
+- https://www.sciencedirect.com/topics/biochemistry-genetics-and-molecular-biology/ka-ks-ratio
+- https://journals.plos.org/plosgenetics/article?id=10.1371/journal.pgen.1000304
+- https://academic.oup.com/mbe/article/19/5/689/1067813
+- https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004627
+- https://elifesciences.org/articles/41815
+- https://pmc.ncbi.nlm.nih.gov/articles/PMC1461088/
+- https://pubmed.ncbi.nlm.nih.gov/15254261/

@@ -14,13 +14,15 @@ This is the comprehensive environment setup guide for the comparative genomics a
 
 ### Available Conda Environments
 After completing this setup, you will have the following environments:
-- `base` - Base conda environment  
+- `base` - Base conda environment
 - `env_biopython` - Python environment with BioPython and analysis libraries
 - `env_orthofinder` - OrthoFinder for orthology analysis
 - `bioconductor-clusterprofiler_env` - R environment for functional enrichment analysis
 - `eggnog_env` - EggNOG mapper for functional annotation
-- `pastml_env` - PastML for ancestral state reconstruction  
+- `pastml_env` - PastML for ancestral state reconstruction
 - `gff2bed_env` - BEDOPS utilities for format conversion
+- `genome_annotation_env` - RepeatModeler, RepeatMasker, gffread, BUSCO for genome annotation
+- `braker3_env` - BRAKER3 and AUGUSTUS for automated genome annotation
 
 ### Available Jupyter Kernels
 - `env_biopython` - Python (Biopython) kernel
@@ -37,6 +39,17 @@ First, let's check the current environment setup:
 !hostname
 !mamba env list
 !jupyter kernelspec list
+```
+
+```{r}
+R.home()
+```
+
+## 0. Install basic modules
+PyYAML is required for configuration loading. Install with:
+
+```{python}
+!pip install pyyaml
 ```
 
 ## 1. Install OrthoFinder (3.0.1b1)
@@ -143,9 +156,18 @@ EOF
 ### 3.5 Install tools for plotting
 ```{r}
 install.packages("phytools",repos="https://cloud.r-project.org",quiet=TRUE)
+install.packages('deeptime',repos="https://cloud.r-project.org",quiet=TRUE)
 ```
 
-> also installing the dependencies ‘iterators’, ‘quadprog’, ‘maps’, ‘clusterGeneration’, ‘coda’, ‘combinat’, ‘DEoptim’, ‘doParallel’, ‘expm’, ‘foreach’, ‘mnormt’, ‘numDeriv’, ‘optimParallel’, ‘phangorn’, ‘scatterplot3d’
+> also installing the dependencies 'iterators', 'quadprog', 'maps', 'clusterGeneration', 'coda', 'combinat', 'DEoptim', 'doParallel', 'expm', 'foreach', 'mnormt', 'numDeriv', 'optimParallel', 'phangorn', 'scatterplot3d'
+
+### 3.6 Install yaml package for configuration loading
+
+The yaml package is required for loading the centralized path configuration from `paths.yaml`:
+
+```{r}
+install.packages("yaml", repos="https://cloud.r-project.org", quiet=TRUE)
+```
 
 ## 4. Install EggNOG Mapper
 
@@ -278,6 +300,270 @@ BEDOPS provides utilities for genomic interval operations and format conversion.
 !conda run -n gff2bed_env which gff2bed
 ```
 
+## 9. Install Genome Annotation Tools
+
+This section installs essential tools for genome annotation workflows including repeat identification, masking, and quality assessment.
+
+### 9.1 Create Genome Annotation Environment
+
+Create a dedicated environment with RepeatModeler, RepeatMasker, gffread, and BUSCO:
+
+```{python}
+%%bash
+mamba create -n genome_annotation_env -y -c conda-forge -c bioconda \
+    repeatmodeler repeatmasker gffread busco=6.0.0 sepp=4.5.5
+```
+
+> **Note**: BUSCO 6.0.0 should be installed with SEPP 4.5.5 for auto-lineage compatibility. This installation may take several minutes due to the many dependencies these tools require.
+
+### 9.2 Verify RepeatModeler Installation
+
+RepeatModeler is used for de novo repeat family identification and modeling.
+
+```{python}
+!conda run -n genome_annotation_env RepeatModeler -version
+```
+
+### 9.3 Verify RepeatMasker Installation
+
+RepeatMasker screens DNA sequences for interspersed repeats and low complexity regions.
+
+```{python}
+!conda run -n genome_annotation_env RepeatMasker -version
+```
+
+### 9.4 Verify gffread Installation
+
+gffread is a utility for parsing and converting GFF/GTF files.
+
+```{python}
+!conda run -n genome_annotation_env gffread --version
+```
+
+### 9.5 Verify BUSCO Installation
+
+BUSCO (Benchmarking Universal Single-Copy Orthologs) assesses genome assembly and annotation completeness.
+
+```{python}
+!conda run -n genome_annotation_env busco --version
+```
+
+### 9.6 Troubleshooting Notes
+
+If you encounter issues during installation:
+
+- If mamba/conda hangs during environment solving, try creating a fresh environment rather than installing into an existing one
+- For RepeatModeler, version 2.0.x includes the LTR structural discovery pipeline (`-LTRStruct` option)
+- If you get perl-related errors with RepeatModeler, install `perl-File-Which`:
+
+```{python}
+# Only run if needed for perl-related errors
+# !mamba install -n genome_annotation_env -y perl-file-which
+```
+
+## 10. Install BRAKER3
+
+BRAKER3 is a fully automated pipeline for eukaryotic genome annotation that combines GeneMark-ETP with AUGUSTUS. It uses protein and/or RNA-Seq evidence for training gene finders.
+
+> **Note**: The bioconda BRAKER package may lag behind the GitHub development version, but is sufficient for standard annotation workflows. For bleeding-edge features, consider manual installation from GitHub.
+
+### 10.1 Create BRAKER Environment
+
+Create a dedicated environment for BRAKER3 with all dependencies:
+
+```{python}
+%%bash
+mamba create -n braker3_env -y -c bioconda -c conda-forge \
+    braker3 augustus
+```
+
+> **Note**: This installation may take 10-20 minutes due to the many Perl dependencies and compiled tools required.
+
+### 10.2 Verify BRAKER Installation
+
+```{python}
+!conda run -n braker3_env braker.pl --version
+```
+
+### 10.3 Verify AUGUSTUS Installation
+
+AUGUSTUS is the core gene prediction tool used by BRAKER:
+
+```{python}
+!conda run -n braker3_env augustus --version
+```
+
+### 10.4 Check AUGUSTUS Config Path
+
+BRAKER needs a writable AUGUSTUS config directory:
+
+```{python}
+!conda run -n braker3_env bash -c 'echo $AUGUSTUS_CONFIG_PATH'
+```
+
+### 10.5 Download GeneMark-ETP (Manual Step Required)
+
+GeneMark-ETP requires a license agreement and must be downloaded manually:
+
+1. Visit: http://exon.gatech.edu/GeneMark/license_download.cgi
+2. Select "GeneMark-ETP" and agree to the license
+3. Download the appropriate version for Linux 64-bit
+4. Extract to `./Apps/GeneMark-ETP/`
+
+```{python}
+# After downloading, extract GeneMark-ETP:
+# !mkdir -p ./Apps/GeneMark-ETP
+# !tar -xzf gmetp_linux_64.tar.gz -C ./Apps/GeneMark-ETP
+# !gzip -d ./Apps/gm_key.gz
+# !cp ./Apps/gm_key ~/.gm_key  # Copy license key
+```
+
+### 10.6 Set GeneMark Path (After Manual Download)
+
+```{python}
+# After GeneMark-ETP is installed, set the path:
+# import os
+# os.environ['GENEMARK_PATH'] = './Apps/GeneMark-ETP/gmes_linux_64_4'
+```
+
+### 10.7 Test BRAKER (Quick Validation)
+
+Test that BRAKER can find its dependencies:
+
+```{python}
+!conda run -n braker3_env braker.pl --help | head -50
+```
+
+### 10.8 BRAKER Usage Example
+
+Example command for protein-only mode (EP mode / BRAKER2-style):
+
+```bash
+# Run from the project directory with braker3_env activated
+conda run -n braker3_env braker.pl \
+    --genome=./path/to/genome.fna \
+    --prot_seq=./DB/Metazoa.fa \
+    --species=species_name \
+    --threads=16 \
+    --gff3 \
+    --workingdir=./Outputs/BRAKER/species_name
+```
+
+### 10.9 Troubleshooting BRAKER
+
+Common issues and solutions:
+
+- **"AUGUSTUS_CONFIG_PATH not writable"**: Copy the config directory to a writable location:
+  ```bash
+  cp -r $CONDA_PREFIX/config ./Augustus_config
+  export AUGUSTUS_CONFIG_PATH=$(pwd)/Augustus_config
+  ```
+
+- **"GeneMark not found"**: Ensure GeneMark-ETP is downloaded and `GENEMARK_PATH` is set
+
+- **Perl module errors**: Install missing modules:
+  ```bash
+  mamba install -n braker3_env -y perl-yaml perl-hash-merge perl-parallel-forkmanager
+  ```
+
+## 11. Install State-of-the-Art Visualization Tools
+
+This section installs modern visualization tools identified in the bioinformatics literature (2023-2025) for publication-quality figures. These tools provide significant improvements over legacy approaches.
+
+### 11.1 Python Visualization Tools (env_biopython)
+
+#### ETE Toolkit v4 - Advanced Tree Visualization
+
+ETE4 provides the `ete-evol` module for CodeML integration and a web-based "smartview" that eliminates Qt/Xvfb dependencies for HPC headless rendering.
+
+```{python}
+!conda run -n env_biopython pip install ete4
+```
+
+#### pyGenomeViz - Modern Synteny Visualization
+
+pyGenomeViz (v1.6.1+) provides CLI workflows (`pgv-blast`, `pgv-mummer`) that automate alignment-to-visualization pipelines, replacing legacy Java-based MCScanX visualization tools.
+
+```{python}
+!conda run -n env_biopython pip install pygenomeviz
+```
+
+#### pyCirclize - Circos-style Circular Plots
+
+pyCirclize enables Circos-style circular genome visualizations with chord diagrams for synteny blocks and genomic rearrangements.
+
+```{python}
+!conda run -n env_biopython pip install pycirclize
+```
+
+### 11.2 Verify Python Visualization Tools
+
+```{python}
+%%bash
+conda run -n env_biopython python -c "
+import ete4; print(f'ETE4: {ete4.__version__}')
+import pygenomeviz; print(f'pyGenomeViz: {pygenomeviz.__version__}')
+import pycirclize; print(f'pyCirclize: {pycirclize.__version__}')
+"
+```
+
+### 11.3 R Visualization Tools (bioconductor-clusterprofiler_env)
+```{python}
+!mamba install -n bioconductor-clusterprofiler_env -y conda-forge::mpfr conda-forge::gmp
+```
+
+#### ggstatsplot - Statistical Annotations
+
+ggstatsplot provides APA-formatted statistical annotations for scatter plots, including correlation coefficients, p-values, and confidence intervals.
+
+```{r}
+install.packages("Rmpfr", repos="https://cloud.r-project.org")
+install.packages("ggstatsplot", repos="https://cloud.r-project.org")
+```
+
+#### ggpubr - Publication-Ready Plots
+
+ggpubr provides `stat_cor()` and `stat_compare_means()` for easy statistical annotation, plus `ggarrange()` for multi-panel figures.
+
+```{r}
+install.packages("ggpubr", repos="https://cloud.r-project.org", quiet=TRUE)
+```
+
+#### tidygraph + ggraph - Network Visualization
+
+These packages provide grammar-of-graphics network visualization for GO term relationships and orthogroup networks.
+
+```{r}
+install.packages(c("tidygraph", "ggraph"), repos="https://cloud.r-project.org", quiet=TRUE)
+```
+
+### 11.4 Verify R Visualization Tools
+
+```{r}
+cat("Checking R visualization packages...\n")
+packages <- c("ggstatsplot", "ggpubr", "tidygraph", "ggraph")
+for (pkg in packages) {
+    if (requireNamespace(pkg, quietly = TRUE)) {
+        cat(paste0(pkg, ": ", packageVersion(pkg), "\n"))
+    } else {
+        cat(paste0(pkg, ": NOT INSTALLED\n"))
+    }
+}
+```
+
+### 11.5 State-of-the-Art Tools Reference
+
+| Tool | Language | Purpose | Key Feature |
+|------|----------|---------|-------------|
+| ETE4 | Python | Tree visualization | smartview (no Xvfb), `ete-evol` for CodeML |
+| pyGenomeViz | Python | Synteny plots | CLI workflows, modern design |
+| pyCirclize | Python | Circular plots | Circos-style, chord diagrams |
+| ggstatsplot | R | Statistical plots | APA-formatted annotations |
+| ggpubr | R | Publication plots | Easy stat annotation |
+| ggraph | R | Networks | Grammar-of-graphics networks |
+
+> **Reference**: See `References/state-of-the-art-tools.md` for detailed tool evaluation and literature citations.
+
 ## Installation Complete
 
 Your comparative genomics analysis environment is now fully configured with all necessary tools:
@@ -292,12 +578,27 @@ Your comparative genomics analysis environment is now fully configured with all 
 - **EggNOG Mapper**: Gene/protein functional annotation
 - **clusterProfiler**: Functional enrichment analysis (R)
 
+### Genome Annotation & Quality Assessment
+- **BRAKER3**: Fully automated eukaryotic genome annotation pipeline
+- **AUGUSTUS**: Ab initio gene prediction with hints
+- **RepeatModeler**: De novo repeat family identification and modeling
+- **RepeatMasker**: Repeat element screening and masking
+- **gffread**: GFF/GTF file parsing and conversion
+- **BUSCO**: Genome assembly and annotation completeness assessment
+
 ### Data Processing & Visualization
 - **BioPython**: Python bioinformatics libraries
 - **Pandas, NumPy**: Data manipulation
 - **Matplotlib, Seaborn**: Visualization
 - **UpSetPlot**: Set intersection visualization
 - **BEDOPS**: Genomic interval operations
+
+### State-of-the-Art Visualization (2023-2025)
+- **ETE4**: Advanced tree visualization with CodeML integration
+- **pyGenomeViz**: Modern synteny visualization (replaces MCScanX Java tools)
+- **pyCirclize**: Circos-style circular genome plots
+- **ggstatsplot**: APA-formatted statistical annotations (R)
+- **ggraph**: Grammar-of-graphics network visualization (R)
 
 ### Development Environment
 - **Jupyter Lab/Notebook**: Interactive analysis

@@ -1,0 +1,26 @@
+name: env_paml
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  # PAML suite for Ka/Ks analysis
+  - paml>=4.10
+  # Codon alignment tools
+  - pal2nal>=14.1
+  # CDS extraction
+  - gffread>=0.12
+  # Python environment
+  - python>=3.10
+  - biopython>=1.80
+  - pandas>=2.0
+  - numpy>=1.24
+  - scipy>=1.10
+  - matplotlib>=3.7
+  - seaborn>=0.12
+  # Parallel processing
+  - joblib>=1.3
+  # Progress bars
+  - tqdm>=4.65
+  # Jupyter support
+  - ipykernel

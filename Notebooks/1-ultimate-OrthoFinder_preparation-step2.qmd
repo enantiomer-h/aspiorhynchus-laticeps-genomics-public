@@ -42,6 +42,11 @@ import logging
 from pathlib import Path
 from multiprocessing import Pool
 
+# Load centralized path configuration
+import sys
+sys.path.insert(0, './Notebooks/config')
+from load_config import get_path, get_species_list, get_focal_species
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -429,7 +434,7 @@ def extract_proteins_with_validation(fna_file, gff_file, faa_output, genetic_cod
 ## Species-Specific Processing Functions
 
 ```{python}
-def process_diptychus_maculatus(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+def process_diptychus_maculatus(base_dir=None, output_dir=None):
     """Process Diptychus_maculatus genome with header standardization."""
     
     species_name = "Diptychus_maculatus"
@@ -465,7 +470,7 @@ def process_diptychus_maculatus(base_dir="./DB/GENOME_Comparison", output_dir=".
     
     return results
 
-def process_triplophysa_bombifrons(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+def process_triplophysa_bombifrons(base_dir=None, output_dir=None):
     """Process Triplophysa_bombifrons genome with header standardization."""
     
     species_name = "Triplophysa_bombifrons"
@@ -501,7 +506,7 @@ def process_triplophysa_bombifrons(base_dir="./DB/GENOME_Comparison", output_dir
     
     return results
 
-def process_aspiorhynchus_laticeps(base_dir="./DB/GENOME_Comparison", output_dir="./DB/GENOME_Comparison/FAA"):
+def process_aspiorhynchus_laticeps(base_dir=None, output_dir=None):
     """Process Aspiorhynchus_laticeps genome with header standardization."""
     
     species_name = "Aspiorhynchus_laticeps"
@@ -558,8 +563,8 @@ def process_aspiorhynchus_laticeps(base_dir="./DB/GENOME_Comparison", output_dir
 ## Batch Processing and Quality Control
 
 ```{python}
-def process_problematic_genomes(species_list=None, base_dir="./DB/GENOME_Comparison", 
-                              output_dir="./DB/GENOME_Comparison/FAA"):
+def process_problematic_genomes(species_list=None, base_dir=None, 
+                              output_dir=None):
     """
     Process genomes that require header standardization.
     
@@ -576,6 +581,10 @@ def process_problematic_genomes(species_list=None, base_dir="./DB/GENOME_Compari
     --------
     dict : Processing results for each species
     """
+    if base_dir is None:
+        base_dir = get_path('database.genome_comparison')
+    if output_dir is None:
+        output_dir = get_path('database.faa_dir')
     
     if species_list is None:
         species_list = ['Diptychus_maculatus', 'Triplophysa_bombifrons', 'Aspiorhynchus_laticeps']
@@ -624,7 +633,9 @@ def process_problematic_genomes(species_list=None, base_dir="./DB/GENOME_Compari
     
     return results
 
-def validate_processed_files(output_dir="./DB/GENOME_Comparison/FAA", min_proteins=100):
+def validate_processed_files(output_dir=None, min_proteins=100):
+    if output_dir is None:
+        output_dir = get_path('database.faa_dir')
     """Validate all processed FAA files."""
     
     logger.info(f"Validating processed files in: {output_dir}")

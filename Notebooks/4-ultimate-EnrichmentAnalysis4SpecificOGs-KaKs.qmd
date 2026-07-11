@@ -1,5 +1,6 @@
 ---
-title: "Ultimate Enrichment Analysis for CAFE-Significant Orthogroups"
+title: "Enrichment Analysis for Ka/Ks Selection Categories"
+subtitle: "GO and KEGG enrichment for genes under positive and purifying selection"
 jupyter:
   kernelspec:
     display_name: clusterprofiler R
@@ -8,25 +9,30 @@ jupyter:
 ---
 
 ## Overview
-This notebook performs comprehensive GO and KO enrichment analysis for orthogroups identified as
-significantly evolving by **CAFE5 analysis**. Instead of simple max/min gene count comparisons,
-we use CAFE's birth-death model to identify families with statistically significant expansion
-or contraction in *Diptychus_maculatus*.
 
-### Analysis Categories (CAFE-based)
-- **CAFE-Expanded families**: Orthogroups with significant expansion in *A. laticeps* (p < 0.05, positive change)
-- **CAFE-Contracted families**: Orthogroups with significant contraction in *A. laticeps* (p < 0.05, negative change)
-- **Species-specific families**: Orthogroups unique to *A. laticeps* (all other species have zero genes)
+This notebook performs comprehensive GO and KO enrichment analysis for orthogroups identified by **Ka/Ks (dN/dS) selection analysis**. Unlike the CAFE-based enrichment which focuses on gene family size changes, this analysis focuses on **sequence-level selection pressure**.
 
-### Why CAFE-based enrichment?
-1. **Statistical rigor**: CAFE uses a birth-death model to identify families evolving faster than neutral expectation
-2. **Phylogenetic awareness**: Accounts for evolutionary relationships between species
-3. **Biologically meaningful**: Identifies adaptive evolution rather than simple gene count differences
+### Analysis Categories (Selection-Based)
 
-### CAFE Results Summary for *A. laticeps*
-- Total families with significant expansion: 2,369
-- Total families with significant contraction: 4,179
-- Net change: -1,058 genes (indicating overall genome contraction)
+- **Positive Selection (tentative)**: Orthogroups where max omega > 1 in pairwise comparisons (yn00)
+- **Relaxed Purifying**: Orthogroups with 0.5 < mean omega <= 1.0
+- **Moderate Purifying**: Orthogroups with 0.1 < mean omega <= 0.5
+- **Strong Purifying**: Orthogroups with mean omega <= 0.1 (essential genes)
+
+### Why Selection-Based Enrichment?
+
+1. **Complementary to CAFE**: CAFE detects gene family SIZE changes; Ka/Ks detects SEQUENCE changes
+2. **Adaptive evolution**: Positive selection (omega > 1) indicates adaptive amino acid changes
+3. **Essential genes**: Strong purifying selection identifies functionally critical genes
+4. **Relaxed constraint**: May indicate niche-specific adaptation or pseudogenization
+
+### Ka/Ks Results Summary for *A. laticeps*
+
+- Total orthogroups analyzed: ~32,112
+- yn00 successful: ~24,741
+- Positive selection (tentative): ~14,920
+- Relaxed purifying: ~6,132
+- Strong purifying: ~2,162
 
 ## Environment Setup
 
@@ -71,8 +77,6 @@ cat(sprintf("OrthoFinder results: %s\n", get_path("orthofinder.results_dir")))
 # Define commonly used paths for this notebook
 ORTHOGROUPS_TSV <- get_path("orthofinder.orthogroups_tsv")
 ORTHOGROUPS_COUNT <- get_path("orthofinder.orthogroups_count")
-CAFE_FAMILY_RESULTS <- get_path("cafe.single_lambda.family_results")
-CAFE_CHANGE_TAB <- get_path("cafe.single_lambda.change_tab")
 ORG_DB_PATH <- get_path("database.org_db")
 OUTPUT_FIGURES <- get_path("outputs.figures")
 OUTPUT_TABLES <- get_path("outputs.tables")
@@ -80,6 +84,12 @@ GO_ENRICHMENT_DIR <- get_path("outputs.go_enrichment")
 KO_ENRICHMENT_DIR <- get_path("outputs.ko_enrichment")
 EGGNOG_GENE2PATHWAY <- get_path("eggnog.gene2pathway")
 EGGNOG_KEGG_INFO <- get_path("eggnog.kegg_info")
+GENOMEWIDE_SUMMARY <- get_path("outputs.genomewide_selection.summary")
+
+# Ka/Ks results paths
+KAKS_MASTER <- paste0(GENOMEWIDE_SUMMARY, "/genome_wide_selection_master.tsv")
+KAKS_TENTATIVE <- paste0(GENOMEWIDE_SUMMARY, "/positive_selection_tentative.tsv")
+KAKS_SIGNIFICANT <- paste0(GENOMEWIDE_SUMMARY, "/positive_selection_significant.tsv")
 ```
 
 ### Initialize Custom Annotation Database
@@ -87,9 +97,6 @@ EGGNOG_KEGG_INFO <- get_path("eggnog.kegg_info")
 ```{r}
 #| vscode: {languageId: r}
 # Force reinstall OrgDb to ensure the latest version is loaded
-# This is needed because R caches installed packages and won't pick up updates
-# to the source package automatically
-
 orgdb_pkg <- ORG_DB_PATH
 
 # Check package exists
@@ -137,7 +144,7 @@ cat("========================================\n")
 if (!orgdb_name %in% installed.packages(lib.loc = target_lib)[,"Package"]) {
   stop("Installation failed - package not found in library after install")
 }
-cat("✓ Package installed successfully\n\n")
+cat("Package installed successfully\n\n")
 
 # Load the library
 cat("Loading", orgdb_name, "...\n")
@@ -152,9 +159,9 @@ print(sample_ids)
 
 # Check for expected format
 if (any(grepl("^g\\d+\\.t\\d+$", sample_ids))) {
-  cat("\n✓ Gene IDs are in BRAKER3 format (g*.t*) - CORRECT\n")
+  cat("\nGene IDs are in BRAKER3 format (g*.t*) - CORRECT\n")
 } else if (any(grepl("^evm\\.model\\.", sample_ids))) {
-  cat("\n✗ WARNING: Gene IDs are in EVM format - OLD DATABASE LOADED!\n")
+  cat("\nWARNING: Gene IDs are in EVM format - OLD DATABASE LOADED!\n")
   cat("  Please check that the OrgDb directory contains the new database.\n")
 } else {
   cat("\n? Unknown gene ID format - please verify manually\n")
@@ -164,162 +171,178 @@ keytypes(orgdb_obj)
 GO_database <- orgdb_name
 ```
 
-## Orthogroup Classification (CAFE-based)
+## Load Ka/Ks Selection Results
 
 ### Data Sources
-- **CAFE Family Results**: `{cafe.single_lambda.family_results}` (from config)
-- **CAFE Per-Species Changes**: `{cafe.single_lambda.change_tab}` (from config)
-- **Gene Count Data**: `{orthofinder.orthogroups_count}` (from config)
 
-### Load CAFE Analysis Results
+- **Ka/Ks Master Results**: `./Outputs/GenomewideSelection/summary/genome_wide_selection_master.tsv`
+- **Tentative Positive Selection**: `./Outputs/GenomewideSelection/summary/positive_selection_tentative.tsv`
+- **Orthogroups Information**: Configured via `orthofinder.orthogroups_tsv`
+
+### Load Ka/Ks Analysis Results
 
 ```{r}
 #| vscode: {languageId: r}
-# Load CAFE family-level p-values
-# IMPORTANT: The file header starts with '#FamilyID' - R treats '#' as comment by default!
-# Must set comment.char = "" to disable comment handling
-cafe_family_results <- read.table(
-  CAFE_FAMILY_RESULTS,
+# Load Ka/Ks master results
+kaks_master <- read.table(
+  KAKS_MASTER,
   header = TRUE, sep = "\t", stringsAsFactors = FALSE,
-  check.names = FALSE, comment.char = ""
-)
-# Fix column name (remove '#' prefix)
-colnames(cafe_family_results)[1] <- "FamilyID"
-
-# Debug: Show structure to verify correct loading
-cat("Loaded cafe_family_results:\n")
-cat(paste("  Columns:", paste(colnames(cafe_family_results), collapse = ", "), "\n"))
-cat(paste("  Rows:", nrow(cafe_family_results), "\n"))
-
-# Load CAFE per-family per-species changes
-cafe_changes <- read.table(
-  CAFE_CHANGE_TAB,
-  header = TRUE, sep = "\t", stringsAsFactors = FALSE
+  quote = "", fill = TRUE
 )
 
-# Summary of CAFE results
-cat("=== CAFE Analysis Summary ===\n")
-cat(paste("Total families analyzed:", nrow(cafe_family_results), "\n"))
-cat(paste("Significant families (p < 0.05):",
-          sum(cafe_family_results$pvalue < 0.05), "\n"))
+cat("=== Ka/Ks Analysis Results Loaded ===\n")
+cat(paste("Total orthogroups:", nrow(kaks_master), "\n"))
+cat(paste("Columns:", paste(colnames(kaks_master)[1:10], collapse = ", "), "...\n"))
+
+# Check status distribution
+cat("\nyn00 Status distribution:\n")
+print(table(kaks_master$status))
 ```
 
-### Identify CAFE-Expanded Gene Families
-Orthogroups with **significant expansion** in *Diptychus_maculatus*: p-value < 0.05 AND positive change.
+## Selection Category Classification
+
+### Positive Selection (Tentative)
+
+Orthogroups where **max omega > 1** in pairwise comparisons, indicating at least one species pair shows evidence of positive selection.
 
 ```{r}
 #| vscode: {languageId: r}
-# Get focal species column from change data (includes node ID in column name)
-focal <- get_focal_species()
-focal_change_col <- paste0(get_focal_abbreviation(), "_Change")
-asp_col <- grep(focal, colnames(cafe_changes), value = TRUE)
-cat(paste("Focal species column:", asp_col, "\n"))
+# Filter to successful yn00 results
+kaks_success <- kaks_master[kaks_master$status == "success", ]
+cat(paste("Successful yn00 analyses:", nrow(kaks_success), "\n\n"))
 
-# Merge CAFE results with changes
-cafe_merged <- merge(
-  cafe_family_results,
-  cafe_changes[, c("FamilyID", asp_col)],
-  by = "FamilyID"
-)
-colnames(cafe_merged)[ncol(cafe_merged)] <- focal_change_col
-
-# Filter for significantly expanded families
-cafe_expanded <- cafe_merged[
-  cafe_merged$pvalue < 0.05 & cafe_merged[[focal_change_col]] > 0,
+# Positive selection (tentative) - max_omega > 1
+positive_tentative_OG <- kaks_success$Orthogroup[
+  !is.na(kaks_success$max_omega) &
+  kaks_success$max_omega > 1
 ]
 
-# Store expanded family IDs
-expanded_OG <- cafe_expanded$FamilyID
+cat("=== POSITIVE SELECTION (TENTATIVE) ===\n")
+cat(paste("Number of orthogroups with max omega > 1:", length(positive_tentative_OG), "\n"))
 
-cat("\n=== CAFE-Expanded Families ===\n")
-cat(paste("Number of CAFE-expanded families:", length(expanded_OG), "\n"))
-cat(paste("Mean expansion:", round(mean(cafe_expanded[[focal_change_col]]), 2), "genes\n"))
-cat(paste("Max expansion:", max(cafe_expanded[[focal_change_col]]), "genes\n"))
-cat("\nTop 10 expanded families:\n")
-top_expanded <- cafe_expanded[order(-cafe_expanded[[focal_change_col]]), ][1:10, ]
-print(top_expanded[, c("FamilyID", "pvalue", focal_change_col)])
+# Show distribution of max_omega for positive selection
+if (length(positive_tentative_OG) > 0) {
+  positive_data <- kaks_success[kaks_success$Orthogroup %in% positive_tentative_OG, ]
+  cat(paste("Mean max_omega:", round(mean(positive_data$max_omega, na.rm = TRUE), 3), "\n"))
+  cat(paste("Median max_omega:", round(median(positive_data$max_omega, na.rm = TRUE), 3), "\n"))
+  cat(paste("Max max_omega:", round(max(positive_data$max_omega, na.rm = TRUE), 3), "\n"))
+}
 ```
 
-### Identify CAFE-Contracted Gene Families
-Orthogroups with **significant contraction** in *Diptychus_maculatus*: p-value < 0.05 AND negative change.
+### Relaxed Purifying Selection
+
+Orthogroups with **0.5 < mean omega <= 1.0**, indicating reduced functional constraint.
 
 ```{r}
 #| vscode: {languageId: r}
-# Filter for significantly contracted families
-cafe_contracted <- cafe_merged[
-  cafe_merged$pvalue < 0.05 & cafe_merged[[focal_change_col]] < 0,
+# Relaxed purifying - 0.5 < mean_omega <= 1.0
+relaxed_OG <- kaks_success$Orthogroup[
+  !is.na(kaks_success$mean_omega) &
+  kaks_success$mean_omega > 0.5 &
+  kaks_success$mean_omega <= 1.0
 ]
 
-# Store contracted family IDs
-contracted_OG <- cafe_contracted$FamilyID
+cat("=== RELAXED PURIFYING SELECTION ===\n")
+cat(paste("Number of orthogroups:", length(relaxed_OG), "\n"))
 
-cat("=== CAFE-Contracted Families ===\n")
-cat(paste("Number of CAFE-contracted families:", length(contracted_OG), "\n"))
-cat(paste("Mean contraction:", round(mean(cafe_contracted[[focal_change_col]]), 2), "genes\n"))
-cat(paste("Max contraction:", min(cafe_contracted[[focal_change_col]]), "genes\n"))
-
-# Debug: check column names
-cat("\nColumn names in cafe_contracted:", paste(colnames(cafe_contracted), collapse = ", "), "\n")
-
-cat("\nTop 10 contracted families:\n")
-top_contracted <- head(cafe_contracted[order(cafe_contracted[[focal_change_col]]), ], 10)
-
-# Use explicit data.frame to avoid any class-related print issues
-display_df <- data.frame(
-  FamilyID = top_contracted$FamilyID,
-  pvalue = top_contracted$pvalue,
-  Change = top_contracted[[focal_change_col]]
-)
-colnames(display_df)[3] <- focal_change_col
-print(display_df, row.names = FALSE)
+if (length(relaxed_OG) > 0) {
+  relaxed_data <- kaks_success[kaks_success$Orthogroup %in% relaxed_OG, ]
+  cat(paste("Mean omega:", round(mean(relaxed_data$mean_omega, na.rm = TRUE), 3), "\n"))
+}
 ```
 
-### Species-Specific Gene Families
-Orthogroups where only *Diptychus_maculatus* has genes (all other species have zero).
+### Moderate Purifying Selection
+
+Orthogroups with **0.1 < mean omega <= 0.5**, indicating moderate functional constraint.
 
 ```{r}
 #| vscode: {languageId: r}
-# Load OrthoFinder gene count data for species-specific analysis
-data <- read.table(ORTHOGROUPS_COUNT,
-                   header = TRUE, stringsAsFactors = FALSE)
+# Moderate purifying - 0.1 < mean_omega <= 0.5
+moderate_purifying_OG <- kaks_success$Orthogroup[
+  !is.na(kaks_success$mean_omega) &
+  kaks_success$mean_omega > 0.1 &
+  kaks_success$mean_omega <= 0.5
+]
 
-# Find orthogroups unique to focal species
-orthogroups_with_unique_nonzero <- data$Orthogroup[apply(data[, -c(1, ncol(data))], 1, function(row) {
-  focal <- get_focal_species()
-  asp_value <- row[[focal]]
-  other_values <- row[names(row) != focal]
-  asp_value > 0 && all(other_values == 0)
-})]
+cat("=== MODERATE PURIFYING SELECTION ===\n")
+cat(paste("Number of orthogroups:", length(moderate_purifying_OG), "\n"))
 
-# Store as vector for analysis
-unique_nonzero_genes_OG <- c(orthogroups_with_unique_nonzero)
-
-cat("=== Species-Specific Families ===\n")
-cat(paste("Number of species-specific gene families:", length(unique_nonzero_genes_OG), "\n"))
-cat("First 10 unique orthogroups:\n")
-print(head(unique_nonzero_genes_OG, 10))
+if (length(moderate_purifying_OG) > 0) {
+  moderate_data <- kaks_success[kaks_success$Orthogroup %in% moderate_purifying_OG, ]
+  cat(paste("Mean omega:", round(mean(moderate_data$mean_omega, na.rm = TRUE), 3), "\n"))
+}
 ```
 
-### Summary of Gene Family Categories
+### Strong Purifying Selection
+
+Orthogroups with **mean omega <= 0.1**, indicating strong functional constraint (essential genes).
+
+```{r}
+#| vscode: {languageId: r}
+# Strong purifying - mean_omega <= 0.1
+strong_purifying_OG <- kaks_success$Orthogroup[
+  !is.na(kaks_success$mean_omega) &
+  kaks_success$mean_omega <= 0.1
+]
+
+cat("=== STRONG PURIFYING SELECTION ===\n")
+cat(paste("Number of orthogroups:", length(strong_purifying_OG), "\n"))
+
+if (length(strong_purifying_OG) > 0) {
+  strong_data <- kaks_success[kaks_success$Orthogroup %in% strong_purifying_OG, ]
+  cat(paste("Mean omega:", round(mean(strong_data$mean_omega, na.rm = TRUE), 3), "\n"))
+}
+```
+
+### Summary of Selection Categories
 
 ```{r}
 #| vscode: {languageId: r}
 cat("\n========================================\n")
-cat("    ORTHOGROUP CLASSIFICATION SUMMARY\n")
+cat("    SELECTION CATEGORY SUMMARY\n")
 cat("========================================\n\n")
-cat(paste("CAFE-Expanded families:     ", length(expanded_OG), "\n"))
-cat(paste("CAFE-Contracted families:   ", length(contracted_OG), "\n"))
-cat(paste("Species-specific families:  ", length(unique_nonzero_genes_OG), "\n"))
+cat(paste("Positive selection (tentative):  ", length(positive_tentative_OG), "\n"))
+cat(paste("Relaxed purifying:               ", length(relaxed_OG), "\n"))
+cat(paste("Moderate purifying:              ", length(moderate_purifying_OG), "\n"))
+cat(paste("Strong purifying:                ", length(strong_purifying_OG), "\n"))
 cat(paste("----------------------------------------\n"))
-cat(paste("Total unique families:      ",
-          length(unique(c(expanded_OG, contracted_OG, unique_nonzero_genes_OG))), "\n"))
-cat("\nNote: These categories may overlap (e.g., a species-specific family\n")
-cat("could also be CAFE-expanded if it appeared recently in A. laticeps)\n")
+cat(paste("Total successful analyses:       ", nrow(kaks_success), "\n"))
+cat("\nNote: Categories may overlap (a gene can have max_omega > 1\n")
+cat("but mean_omega < 0.5 if selection is heterogeneous across species)\n")
 ```
+
+#### Out[1]: ✓ Done 0.0s
+```
+========================================
+
+    SELECTION CATEGORY SUMMARY
+
+========================================
+
+
+Positive selection (tentative):   14920 
+
+Relaxed purifying:                6132 
+
+Moderate purifying:               14558 
+
+Strong purifying:                 2162 
+
+----------------------------------------
+
+Total successful analyses:        24741 
+
+
+Note: Categories may overlap (a gene can have max_omega > 1
+
+but mean_omega < 0.5 if selection is heterogeneous across species)
+```
+
 
 ## GO Enrichment Analysis
 
 ### GO Enrichment Function
+
 This function performs Gene Ontology enrichment analysis for specific orthogroups.
 
 ```{r}
@@ -328,16 +351,16 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
                               key_type="GID", plot_dir=NULL,
                               p_cutoff=0.01, q_cutoff=0.05,
                               # Publication-quality plot parameters
-                              show_category=10, plot_width=12, plot_height=8, 
+                              show_category=10, plot_width=12, plot_height=8,
                               font_size=18, title_size=22, axis_title_size=20,
                               color_palette="viridis", output_formats=c("png", "pdf"),
                               dpi=300, theme_style="publication") {
-  
+
   # Resolve default plot_dir from config
   if (is.null(plot_dir)) {
     plot_dir <- paste0(GO_ENRICHMENT_DIR, "/Plots")
   }
-  
+
   # Load additional libraries for enhanced plotting
   if (!requireNamespace("viridis", quietly = TRUE)) {
     install.packages("viridis")
@@ -347,17 +370,17 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
   }
   library(viridis)
   library(RColorBrewer)
-  
+
   # Read OrthoFinder results
   orthogroups_df <- read.delim(input_path, header = TRUE)
-  
+
   # Extract gene IDs from target orthogroups
   genes_of_interest <- c()
   filtered_rows <- orthogroups_df[orthogroups_df$Orthogroup %in% target_ogs, ]
-  
+
   for (row in 1:nrow(filtered_rows)) {
     selected_row <- filtered_rows[row, ]
-    
+
     for (colname in names(selected_row)) {
       if (colname != "Orthogroup") {
         genes_split <- unlist(strsplit(as.character(selected_row[[colname]]), ", "))
@@ -365,15 +388,15 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
       }
     }
   }
-  
+
   # Remove duplicates and empty strings
   genes_of_interest <- unique(genes_of_interest[genes_of_interest != ""])
-  
+
   if (length(genes_of_interest) == 0) {
     warning("No genes found for the specified orthogroups")
     return(NULL)
   }
-  
+
   # Perform GO enrichment analysis
   tryCatch({
     ego_result <- enrichGO(
@@ -385,83 +408,66 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
       pvalueCutoff  = p_cutoff,
       qvalueCutoff  = q_cutoff
     )
-    
+
     # Create output directory
     if (!dir.exists(plot_dir)) {
       dir.create(plot_dir, recursive = TRUE)
     }
-    
+
     # Save results table
     write.csv(as.data.frame(ego_result), output_path, row.names=FALSE)
-    
+
     # Generate and save visualizations if results exist
     if (nrow(ego_result) > 0) {
-      
+
       # Define publication-quality theme
       publication_theme <- function() {
         theme_minimal() +
         theme(
-          # Text elements
           text = element_text(size = font_size, family = "sans"),
           plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, margin = margin(b = 20)),
           axis.title.x = element_text(size = axis_title_size, face = "bold", margin = margin(t = 15)),
           axis.title.y = element_text(size = axis_title_size, face = "bold", margin = margin(r = 15)),
           axis.text.x = element_text(size = font_size, color = "black"),
           axis.text.y = element_text(size = font_size, color = "black", hjust = 1),
-          
-          # Legend
           legend.title = element_text(size = font_size + 2, face = "bold"),
           legend.text = element_text(size = font_size),
           legend.position = "right",
           legend.margin = margin(l = 20),
           legend.key.size = unit(0.8, "cm"),
-          
-          # Panel and grid
           panel.grid.major = element_line(color = "grey90", size = 0.5),
           panel.grid.minor = element_line(color = "grey95", size = 0.3),
           panel.border = element_rect(color = "black", fill = NA, size = 0.8),
-          
-          # Plot margins
           plot.margin = margin(20, 20, 20, 20),
-          
-          # Strip text for facets
           strip.text = element_text(size = font_size, face = "bold", margin = margin(5, 5, 5, 5))
         )
       }
-      
-      # Define color palette (robust version with error handling)
+
+      # Define color palette
       get_color_palette <- function(palette_name, n_colors) {
         if (palette_name == "viridis") {
           return(viridis::viridis(n_colors))
         } else if (palette_name == "plasma") {
           return(viridis::plasma(n_colors))
-        } else if (palette_name == "inferno") {
-          return(viridis::inferno(n_colors))
-        } else if (palette_name == "magma") {
-          return(viridis::magma(n_colors))
-        } else if (palette_name == "turbo") {
-          return(viridis::turbo(n_colors))
         } else if (palette_name %in% rownames(RColorBrewer::brewer.pal.info)) {
           max_colors <- RColorBrewer::brewer.pal.info[palette_name, "maxcolors"]
           if (n_colors <= max_colors) {
-            # Ensure minimum of 3 colors for RColorBrewer to prevent crashes
             return(RColorBrewer::brewer.pal(max(3, n_colors), palette_name))
           } else {
             return(colorRampPalette(RColorBrewer::brewer.pal(max_colors, palette_name))(n_colors))
           }
         } else {
-          # Robust default fallback with error handling
           return(RColorBrewer::brewer.pal(max(3, min(n_colors, 8)), "Set2"))
         }
       }
-      
+
       # Enhanced Bar plot
       ont_full_name <- switch(ont,
                              "BP" = "Biological Process",
-                             "MF" = "Molecular Function", 
+                             "MF" = "Molecular Function",
                              "CC" = "Cellular Component",
                              ont)
-      
+
       barplot_plot <- barplot(ego_result, showCategory = show_category, x = "Count") +
         scale_fill_gradientn(colors = get_color_palette(color_palette, 100),
                            name = "-log10(p.adjust)",
@@ -477,8 +483,8 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
           axis.text.y = element_text(angle = 0, hjust = 1, size = font_size),
           plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15))
         )
-      
-      # Enhanced Dot plot  
+
+      # Enhanced Dot plot
       dotplot_plot <- dotplot(ego_result, showCategory = show_category, x = "GeneRatio") +
         scale_color_gradientn(colors = get_color_palette(color_palette, 100),
                             name = "-log10(p.adjust)",
@@ -497,45 +503,36 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
           legend.box = "horizontal",
           legend.margin = margin(t = 10)
         )
-      
+
       # Save plots in multiple formats
       for (format in output_formats) {
-        # Bar plot
         barplot_file <- file.path(plot_dir, paste0("GO_enrichment_barplot.", format))
         if (format == "pdf") {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height,
                  device = "pdf", useDingbats = FALSE)
-        } else if (format == "svg") {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
-                 device = "svg")
         } else {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height,
                  dpi = dpi, device = format)
         }
-        
-        # Dot plot
+
         dotplot_file <- file.path(plot_dir, paste0("GO_enrichment_dotplot.", format))
         if (format == "pdf") {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height,
                  device = "pdf", useDingbats = FALSE)
-        } else if (format == "svg") {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
-                 device = "svg")
         } else {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height,
                  dpi = dpi, device = format)
         }
       }
-      
+
       print(paste("GO enrichment completed. Results saved to:", output_path))
       print(paste("Publication-quality plots saved to:", plot_dir))
-      print(paste("Available formats:", paste(output_formats, collapse = ", ")))
     } else {
       print("No significant GO terms found for the given cutoffs")
     }
-    
+
     return(ego_result)
-    
+
   }, error = function(e) {
     print(paste("Error in GO enrichment:", e$message))
     return(NULL)
@@ -543,9 +540,9 @@ enrich_orthogroups <- function(input_path, ont, output_path, target_ogs, org_db,
 }
 ```
 
-### GO Enrichment Analysis: CAFE-Expanded Gene Families
+### GO Enrichment: Positive Selection (Tentative)
 
-These are gene families with **statistically significant expansion** in *A. laticeps* based on CAFE5 birth-death model analysis (p < 0.05, positive change). Enrichment in these families suggests functional categories under positive selection or adaptive expansion.
+Genes showing evidence of positive selection (omega > 1) in at least one pairwise comparison. Enrichment in these families suggests functional categories under **adaptive evolution**.
 
 #### Biological Process (BP)
 
@@ -554,13 +551,15 @@ These are gene families with **statistically significant expansion** in *A. lati
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "BP",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_expanded_BP_results.csv"),
-  target_ogs = expanded_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_positive_tentative_BP_results.csv"),
+  target_ogs = positive_tentative_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
   plot_height = 12,
-  plot_width= 12,
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Expanded_BP_Plots")
+  plot_width = 12,
+  p_cutoff = 0.05,
+  q_cutoff = 0.1,
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Positive_Tentative_BP_Plots")
 )
 ```
 
@@ -571,13 +570,15 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "MF",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_expanded_MF_results.csv"),
-  target_ogs = expanded_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_positive_tentative_MF_results.csv"),
+  target_ogs = positive_tentative_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
-  plot_height = 28,
-  plot_width= 28,
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Expanded_MF_Plots")
+  plot_height = 12,
+  plot_width = 12,
+  p_cutoff = 0.05,
+  q_cutoff = 0.1,
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Positive_Tentative_MF_Plots")
 )
 ```
 
@@ -588,19 +589,21 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "CC",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_expanded_CC_results.csv"),
-  target_ogs = expanded_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_positive_tentative_CC_results.csv"),
+  target_ogs = positive_tentative_OG,
   org_db = orgdb_obj,
+  color_palette="Set2",
   plot_height = 12,
   plot_width = 12,
-  color_palette="Set2",
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Expanded_CC_Plots")
+  p_cutoff = 0.05,
+  q_cutoff = 0.1,
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Positive_Tentative_CC_Plots")
 )
 ```
 
-### GO Enrichment Analysis: CAFE-Contracted Gene Families
+### GO Enrichment: Relaxed Purifying Selection
 
-These are gene families with **statistically significant contraction** in *A. laticeps* (p < 0.05, negative change). Enrichment in these families may indicate relaxed selection, adaptation to specific environmental conditions, or genome streamlining.
+Genes with reduced functional constraint (0.5 < omega <= 1.0). May indicate **niche-specific adaptation** or genes under relaxed selection pressure.
 
 #### Biological Process (BP)
 
@@ -609,13 +612,13 @@ These are gene families with **statistically significant contraction** in *A. la
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "BP",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_contracted_BP_results.csv"),
-  target_ogs = contracted_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_relaxed_purifying_BP_results.csv"),
+  target_ogs = relaxed_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
   plot_height = 12,
-  plot_width= 12,
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Contracted_BP_Plots")
+  plot_width = 12,
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Relaxed_Purifying_BP_Plots")
 )
 ```
 
@@ -626,11 +629,11 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "MF",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_contracted_MF_results.csv"),
-  target_ogs = contracted_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_relaxed_purifying_MF_results.csv"),
+  target_ogs = relaxed_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Contracted_MF_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Relaxed_Purifying_MF_Plots")
 )
 ```
 
@@ -641,15 +644,17 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "CC",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_CAFE_contracted_CC_results.csv"),
-  target_ogs = contracted_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_relaxed_purifying_CC_results.csv"),
+  target_ogs = relaxed_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/CAFE_Contracted_CC_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Relaxed_Purifying_CC_Plots")
 )
 ```
 
-### GO Enrichment Analysis: Species-Specific Gene Families
+### GO Enrichment: Strong Purifying Selection
+
+Genes under strong functional constraint (omega <= 0.1). These are likely **essential genes** critical for basic cellular functions.
 
 #### Biological Process (BP)
 
@@ -658,13 +663,13 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "BP",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_unique_nonzero_BP_results.csv"),
-  target_ogs = unique_nonzero_genes_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_strong_purifying_BP_results.csv"),
+  target_ogs = strong_purifying_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
-  plot_height = 24,
-  plot_width = 24,
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/unique_nonzero_BP_Plots")
+  plot_height = 12,
+  plot_width = 12,
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Strong_Purifying_BP_Plots")
 )
 ```
 
@@ -675,13 +680,11 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "MF",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_unique_nonzero_MF_results.csv"),
-  target_ogs = unique_nonzero_genes_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_strong_purifying_MF_results.csv"),
+  target_ogs = strong_purifying_OG,
   org_db = orgdb_obj,
-  plot_height = 16,
-  plot_width = 16,
   color_palette="Set2",
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/unique_nonzero_MF_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Strong_Purifying_MF_Plots")
 )
 ```
 
@@ -692,36 +695,34 @@ enrich_orthogroups(
 enrich_orthogroups(
   input_path = ORTHOGROUPS_TSV,
   ont = "CC",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_unique_nonzero_CC_results.csv"),
-  target_ogs = unique_nonzero_genes_OG,
+  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_KaKs_strong_purifying_CC_results.csv"),
+  target_ogs = strong_purifying_OG,
   org_db = orgdb_obj,
   color_palette="Set2",
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/unique_nonzero_CC_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/KaKs_Strong_Purifying_CC_Plots")
 )
 ```
 
 ## KEGG Pathway (KO) Enrichment Analysis
 
 ### KO Enrichment Function
-This function performs KEGG pathway enrichment analysis using the enricher function from clusterProfiler.
 
 ```{r}
 #| vscode: {languageId: r}
 enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_database, target_ogs,
                                             output_path, plot_dir=NULL,
                                             p_cutoff=0.05, q_cutoff=0.05, min_gs_size=1,
-                                            # Publication-quality plot parameters
-                                            show_category=10, plot_width=14, plot_height=10, 
+                                            show_category=10, plot_width=14, plot_height=10,
                                             font_size=18, title_size=22, axis_title_size=20,
                                             color_palette="Set2", output_formats=c("png", "pdf"),
                                             dpi=300, theme_style="publication") {
-  
+
   # Resolve default plot_dir from config
   if (is.null(plot_dir)) {
     plot_dir <- paste0(KO_ENRICHMENT_DIR, "/Plots")
   }
-  
-  # Load additional libraries for enhanced plotting
+
+  # Load additional libraries
   if (!requireNamespace("viridis", quietly = TRUE)) {
     install.packages("viridis")
   }
@@ -730,20 +731,20 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
   }
   library(viridis)
   library(RColorBrewer)
-  
+
   tryCatch({
     # Load gene-to-pathway mappings
     gene2pathway_name <- read.table(data_path, sep="\t", header=TRUE, stringsAsFactors=FALSE)
     term2gene <- gene2pathway_name[, c("Pathway", "GID")]
-    
+
     # Extract genes from target orthogroups
     orthogroups_df <- read.delim(input_path, header = TRUE)
     genes_of_interest <- c()
     filtered_rows <- orthogroups_df[orthogroups_df$Orthogroup %in% target_ogs, ]
-    
+
     for (row in 1:nrow(filtered_rows)) {
       selected_row <- filtered_rows[row, ]
-      
+
       for (colname in names(selected_row)) {
         if (colname != "Orthogroup") {
           genes_split <- unlist(strsplit(as.character(selected_row[[colname]]), ", "))
@@ -751,19 +752,19 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
         }
       }
     }
-    
+
     # Remove duplicates and empty strings
     genes_of_interest <- unique(genes_of_interest[genes_of_interest != ""])
-    
+
     if (length(genes_of_interest) == 0) {
       warning("No genes found for KO enrichment analysis")
       return(NULL)
     }
-    
+
     # Load KEGG database
     load(file=KEGG_database)
     pathway2name$Name <- gsub("\\s*\\[BR:ko[0-9]+\\]", "", pathway2name$Name)
-    
+
     # Perform KEGG enrichment analysis
     KEGG_result <- enricher(
       gene          = genes_of_interest,
@@ -774,65 +775,45 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
       pAdjustMethod = "BH",
       minGSSize     = min_gs_size
     )
-    
+
     # Save results
     write.table(as.data.frame(KEGG_result), output_path, sep="\t", row.names=FALSE, quote=FALSE)
-    
+
     # Create plot directory
     if (!dir.exists(plot_dir)) {
       dir.create(plot_dir, recursive=TRUE)
     }
-    
+
     # Generate visualizations if results exist
     if (nrow(KEGG_result) > 0) {
-      
-      # Define publication-quality theme for KEGG plots
+
+      # Define publication-quality theme
       kegg_publication_theme <- function() {
         theme_minimal() +
         theme(
-          # Text elements
           text = element_text(size = font_size, family = "sans"),
           plot.title = element_text(size = title_size, face = "bold", hjust = 0.5, margin = margin(b = 20)),
           axis.title.x = element_text(size = axis_title_size, face = "bold", margin = margin(t = 15)),
           axis.title.y = element_text(size = axis_title_size, face = "bold", margin = margin(r = 15)),
           axis.text.x = element_text(size = font_size - 1, color = "black", angle = 0),
           axis.text.y = element_text(size = font_size - 2, color = "black", hjust = 1),
-          
-          # Legend
           legend.title = element_text(size = font_size + 2, face = "bold"),
           legend.text = element_text(size = font_size),
           legend.position = "right",
           legend.margin = margin(l = 20),
           legend.key.size = unit(0.8, "cm"),
-          legend.box = "vertical",
-          
-          # Panel and grid
           panel.grid.major.x = element_line(color = "grey90", size = 0.5),
           panel.grid.minor.x = element_line(color = "grey95", size = 0.3),
           panel.grid.major.y = element_line(color = "grey90", size = 0.3),
-          panel.grid.minor.y = element_blank(),
           panel.border = element_rect(color = "black", fill = NA, size = 0.8),
-          
-          # Plot margins
-          plot.margin = margin(20, 25, 20, 20),
-          
-          # Strip text for facets
-          strip.text = element_text(size = font_size, face = "bold", margin = margin(5, 5, 5, 5))
+          plot.margin = margin(20, 25, 20, 20)
         )
       }
-      
+
       # Define color palette function
       get_kegg_color_palette <- function(palette_name, n_colors) {
         if (palette_name == "viridis") {
           return(viridis::viridis(n_colors))
-        } else if (palette_name == "plasma") {
-          return(viridis::plasma(n_colors))
-        } else if (palette_name == "inferno") {
-          return(viridis::inferno(n_colors))
-        } else if (palette_name == "magma") {
-          return(viridis::magma(n_colors))
-        } else if (palette_name == "turbo") {
-          return(viridis::turbo(n_colors))
         } else if (palette_name %in% rownames(RColorBrewer::brewer.pal.info)) {
           max_colors <- RColorBrewer::brewer.pal.info[palette_name, "maxcolors"]
           if (n_colors <= max_colors) {
@@ -841,131 +822,78 @@ enrich_orthogroups_with_enricher <- function(input_path, data_path, KEGG_databas
             return(colorRampPalette(RColorBrewer::brewer.pal(max_colors, palette_name))(n_colors))
           }
         } else {
-          return(RColorBrewer::brewer.pal(max(3, min(n_colors, 8)), "Set2"))  # Default fallback
+          return(RColorBrewer::brewer.pal(max(3, min(n_colors, 8)), "Set2"))
         }
       }
-      
-      # Function to truncate long pathway names for better readability
-      truncate_names <- function(names, max_length = 50) {
-        ifelse(nchar(names) > max_length, 
-               paste0(substr(names, 1, max_length), "..."), 
-               names)
-      }
-      
-      # Prepare data for enhanced plotting
-      kegg_data <- as.data.frame(KEGG_result)
-      kegg_data$Description_short <- truncate_names(kegg_data$Description, 45)
-      
+
       # Enhanced Bar plot
       barplot_plot <- barplot(KEGG_result, showCategory = show_category, x = "Count") +
         scale_fill_gradientn(
           colors = get_kegg_color_palette(color_palette, 100),
           name = "-log10(p.adjust)",
-          guide = guide_colorbar(
-            title.position = "top",
-            title.hjust = 0.5,
-            barwidth = unit(0.8, "cm"),
-            barheight = unit(8, "cm")
-          )
+          guide = guide_colorbar(title.position = "top", title.hjust = 0.5)
         ) +
         labs(
           title = "KEGG Pathway Enrichment Analysis",
           x = "Gene Count",
           y = "KEGG Pathways",
-          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways"),
-          caption = "Pathways ranked by statistical significance (p.adjust)"
+          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways")
         ) +
-        kegg_publication_theme() +
-        theme(
-          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15)),
-          plot.caption = element_text(size = font_size, hjust = 1, margin = margin(t = 10))
-        )
-      
-      # Enhanced Dot plot with GeneRatio
+        kegg_publication_theme()
+
+      # Enhanced Dot plot
       dotplot_plot <- dotplot(KEGG_result, showCategory = show_category, x = "GeneRatio") +
         scale_color_gradientn(
           colors = get_kegg_color_palette(color_palette, 100),
           name = "-log10(p.adjust)",
-          guide = guide_colorbar(
-            title.position = "top",
-            title.hjust = 0.5,
-            barwidth = unit(0.8, "cm"),
-            barheight = unit(6, "cm")
-          )
+          guide = guide_colorbar(title.position = "top", title.hjust = 0.5)
         ) +
-        scale_size_continuous(
-          name = "Gene Count", 
-          range = c(3, 10),
-          guide = guide_legend(
-            title.position = "top",
-            title.hjust = 0.5,
-            override.aes = list(color = "grey50")
-          )
-        ) +
+        scale_size_continuous(name = "Gene Count", range = c(3, 10)) +
         labs(
           title = "KEGG Pathway Enrichment Analysis",
           x = "Gene Ratio",
           y = "KEGG Pathways",
-          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways"),
-          caption = "Dot size represents gene count; Color intensity represents significance"
+          subtitle = paste("Top", min(show_category, nrow(KEGG_result)), "enriched pathways")
         ) +
         kegg_publication_theme() +
-        theme(
-          plot.subtitle = element_text(size = font_size + 2, hjust = 0.5, margin = margin(b = 15)),
-          plot.caption = element_text(size = font_size, hjust = 1, margin = margin(t = 10)),
-          legend.box = "horizontal",
-          legend.margin = margin(t = 15)
-        )
-      
-      # Save plots in multiple formats
+        theme(legend.box = "horizontal", legend.margin = margin(t = 15))
+
+      # Save plots
       for (format in output_formats) {
-        # Bar plot
         barplot_file <- file.path(plot_dir, paste0("KO_enrichment_barplot.", format))
-        if (format == "pdf") {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
-                 device = "pdf", useDingbats = FALSE)
-        } else if (format == "svg") {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
-                 device = "svg")
-        } else {
-          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height, 
-                 dpi = dpi, device = format)
-        }
-        
-        # Dot plot
         dotplot_file <- file.path(plot_dir, paste0("KO_enrichment_dotplot.", format))
+
         if (format == "pdf") {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height,
                  device = "pdf", useDingbats = FALSE)
-        } else if (format == "svg") {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
-                 device = "svg")
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height,
+                 device = "pdf", useDingbats = FALSE)
         } else {
-          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height, 
+          ggsave(barplot_file, plot = barplot_plot, width = plot_width, height = plot_height,
+                 dpi = dpi, device = format)
+          ggsave(dotplot_file, plot = dotplot_plot, width = plot_width, height = plot_height,
                  dpi = dpi, device = format)
         }
       }
-      
+
       print(paste("KO enrichment completed. Results saved to:", output_path))
       print(paste("Publication-quality plots saved to:", plot_dir))
-      print(paste("Available formats:", paste(output_formats, collapse = ", ")))
     } else {
       print("No significant KEGG pathways found for the given cutoffs")
     }
-    
+
     return(KEGG_result)
-    
+
   }, error = function(e) {
     print(paste("Error in KO enrichment analysis:", e$message))
-    print("This may be due to insufficient gene overlap or data availability")
     return(NULL)
   })
 }
 ```
 
-### KO Enrichment Analysis: CAFE-Expanded Gene Families
+### KO Enrichment: Positive Selection (Tentative)
 
-KEGG pathway enrichment for gene families with significant expansion in *A. laticeps*.
+KEGG pathway enrichment for genes showing evidence of positive selection.
 
 ```{r}
 #| vscode: {languageId: r}
@@ -973,17 +901,17 @@ enrich_orthogroups_with_enricher(
   input_path = ORTHOGROUPS_TSV,
   data_path = EGGNOG_GENE2PATHWAY,
   KEGG_database = EGGNOG_KEGG_INFO,
-  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_CAFE_expanded_results.tsv"),
-  target_ogs = expanded_OG,
+  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_KaKs_positive_tentative_results.tsv"),
+  target_ogs = positive_tentative_OG,
   plot_width = 12,
   plot_height = 12,
-  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/CAFE_Expanded_KO_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/KaKs_Positive_Tentative_KO_Plots")
 )
 ```
 
-### KO Enrichment Analysis: CAFE-Contracted Gene Families
+### KO Enrichment: Relaxed Purifying Selection
 
-KEGG pathway enrichment for gene families with significant contraction in *A. laticeps*.
+KEGG pathway enrichment for genes with reduced functional constraint.
 
 ```{r}
 #| vscode: {languageId: r}
@@ -991,15 +919,17 @@ enrich_orthogroups_with_enricher(
   input_path = ORTHOGROUPS_TSV,
   data_path = EGGNOG_GENE2PATHWAY,
   KEGG_database = EGGNOG_KEGG_INFO,
-  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_CAFE_contracted_results.tsv"),
-  target_ogs = contracted_OG,
+  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_KaKs_relaxed_purifying_results.tsv"),
+  target_ogs = relaxed_OG,
   plot_width = 12,
   plot_height = 12,
-  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/CAFE_Contracted_KO_Plots")
+  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/KaKs_Relaxed_Purifying_KO_Plots")
 )
 ```
 
-### KO Enrichment Analysis: Species-Specific Gene Families
+### KO Enrichment: Strong Purifying Selection
+
+KEGG pathway enrichment for essential genes under strong purifying selection.
 
 ```{r}
 #| vscode: {languageId: r}
@@ -1007,82 +937,82 @@ enrich_orthogroups_with_enricher(
   input_path = ORTHOGROUPS_TSV,
   data_path = EGGNOG_GENE2PATHWAY,
   KEGG_database = EGGNOG_KEGG_INFO,
-  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_unique_nonzero_results.tsv"),
-  target_ogs = unique_nonzero_genes_OG,
-  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/unique_nonzero_KO_Plots")
+  output_path = paste0(OUTPUT_TABLES, "/KO_enrichment_KaKs_strong_purifying_results.tsv"),
+  target_ogs = strong_purifying_OG,
+  plot_width = 12,
+  plot_height = 12,
+  plot_dir = paste0(OUTPUT_FIGURES, "/KO_Enrichment/KaKs_Strong_Purifying_KO_Plots")
 )
-```
-
-## Quick Test Example
-This section provides a simple test example for GO enrichment analysis using a small set of orthogroups.
-
-```{r}
-#| vscode: {languageId: r}
-# Test with a small set of orthogroups
-test_ogs <- c("OG0001234", "OG0005678", "OG0009101")  # Example orthogroups
-
-# Test GO enrichment function
-test_result <- enrich_orthogroups(
-  input_path = ORTHOGROUPS_TSV,
-  ont = "BP",
-  output_path = paste0(OUTPUT_TABLES, "/GO_enrichment_test_results.csv"),
-  target_ogs = test_ogs,
-  org_db = orgdb_obj,
-  plot_dir = paste0(OUTPUT_FIGURES, "/GO_Enrichment/Test_Plots"),
-  p_cutoff = 1.0,  # Relaxed cutoffs for testing
-  q_cutoff = 1.0
-)
-
-if (!is.null(test_result)) {
-  print("Test enrichment analysis completed successfully")
-  print(head(test_result))
-} else {
-  print("Test analysis returned no results - check orthogroup IDs and data paths")
-}
 ```
 
 ## Summary and Results Organization
 
-The CAFE-based enrichment analysis generates the following outputs:
+The Ka/Ks selection-based enrichment analysis generates the following outputs:
 
 ### GO Enrichment Results
-- **Tables**: `./Notebooks/Tables/GO_enrichment_CAFE_*_results.csv`
-- **Figures**: `./Notebooks/Figures/GO_Enrichment/CAFE_*/`
+
+- **Tables**: `./Notebooks/Tables/GO_enrichment_KaKs_*_results.csv`
+- **Figures**: `./Notebooks/Figures/GO_Enrichment/KaKs_*/`
 
 ### KO Enrichment Results
-- **Tables**: `./Notebooks/Tables/KO_enrichment_CAFE_*_results.tsv`
-- **Figures**: `./Notebooks/Figures/KO_Enrichment/CAFE_*/`
 
-### Analysis Categories (CAFE-based)
-1. **CAFE-Expanded families**: Gene families with statistically significant expansion in *A. laticeps* (p < 0.05, positive change)
-2. **CAFE-Contracted families**: Gene families with statistically significant contraction in *A. laticeps* (p < 0.05, negative change)
-3. **Species-specific families**: Gene families unique to *Diptychus_maculatus* (present only in this species)
+- **Tables**: `./Notebooks/Tables/KO_enrichment_KaKs_*_results.tsv`
+- **Figures**: `./Notebooks/Figures/KO_Enrichment/KaKs_*/`
+
+### Selection Categories Summary
+
+```{r}
+#| vscode: {languageId: r}
+cat("\n========================================\n")
+cat("    FINAL ANALYSIS SUMMARY\n")
+cat("========================================\n\n")
+
+cat("=== Selection Categories ===\n")
+cat(paste("Positive selection (tentative):  ", length(positive_tentative_OG), "orthogroups\n"))
+cat(paste("Relaxed purifying:               ", length(relaxed_OG), "orthogroups\n"))
+cat(paste("Moderate purifying:              ", length(moderate_purifying_OG), "orthogroups\n"))
+cat(paste("Strong purifying:                ", length(strong_purifying_OG), "orthogroups\n"))
+
+cat("\n=== Output Files ===\n")
+cat("GO Enrichment tables: ./Notebooks/Tables/GO_enrichment_KaKs_*.csv\n")
+cat("GO Enrichment figures: ./Notebooks/Figures/GO_Enrichment/KaKs_*/\n")
+cat("KO Enrichment tables: ./Notebooks/Tables/KO_enrichment_KaKs_*.tsv\n")
+cat("KO Enrichment figures: ./Notebooks/Figures/KO_Enrichment/KaKs_*/\n")
+```
 
 ### Interpretation Guidelines
 
-#### CAFE-Expanded Families
-- Enriched GO terms/pathways suggest **functional categories under positive selection**
-- May indicate **adaptive expansion** related to ecological specialization
-- Examples: sensory perception, immune response, metabolism genes
+#### Positive Selection (Tentative)
 
-#### CAFE-Contracted Families
-- Enriched GO terms/pathways may indicate **relaxed selection** or **genome streamlining**
-- Could reflect **adaptation to stable environmental conditions**
-- May identify functions that are **less critical** in *A. laticeps*'s ecological niche
+- Enriched GO terms/pathways suggest **functional categories under adaptive evolution**
+- May indicate **ecological specialization** in *A. laticeps*
+- Examples: immune response, sensory perception, metabolism genes
+
+#### Relaxed Purifying Selection
+
+- Enriched GO terms/pathways may indicate **reduced functional constraint**
+- Could reflect **niche-specific adaptation** where certain functions are less critical
+- May identify genes undergoing **subfunctionalization** or **pseudogenization**
+
+#### Strong Purifying Selection
+
+- Enriched GO terms/pathways identify **essential genes**
+- Core cellular functions that cannot tolerate amino acid changes
+- Examples: ribosomal proteins, DNA replication, core metabolism
 
 ## Data Sources and References
 
 ### Input Data
-- **OrthoFinder Results**: Configured via `orthofinder.results_dir` (see `config/paths.yaml`)
-- **CAFE5 Family Results**: Configured via `cafe.single_lambda.family_results`
-- **CAFE5 Per-Species Changes**: Configured via `cafe.single_lambda.change_tab`
-- **Gene Count Data**: Configured via `orthofinder.orthogroups_count`
+
+- **Ka/Ks Results**: `./Outputs/GenomewideSelection/summary/` (from genome-wide selection screen)
 - **Orthogroups Information**: Configured via `orthofinder.orthogroups_tsv`
-- [EggNOG Annotation Data](./Outputs/Eggnog/)
+- **EggNOG Annotation Data**: `./Outputs/Eggnog/`
 
 ### Methods Reference
-- **CAFE5**: Mendes FK, Vanderpool D, Fulton B, Hahn MW. CAFE 5 models variation in evolutionary rates among gene families. Bioinformatics. 2020;36(22-23):5516-5518.
+
+- **PAML yn00**: Yang Z, Nielsen R. Estimating synonymous and nonsynonymous substitution rates under realistic evolutionary models. Mol Biol Evol. 2000;17(1):32-43.
 - **clusterProfiler**: Wu T, Hu E, Xu S, Chen M, Guo P, Dai Z, et al. clusterProfiler 4.0: A universal enrichment tool for interpreting omics data. The Innovation. 2021;2(3):100141.
 
 ---
-*This analysis integrates CAFE5 gene family evolution results with OrthoFinder orthogroups for statistically rigorous enrichment analysis.*
+
+*This analysis integrates Ka/Ks selection pressure results with functional enrichment to identify biological processes under different selection regimes in the focal species.*

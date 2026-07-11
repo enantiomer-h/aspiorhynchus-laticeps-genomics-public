@@ -1,0 +1,1727 @@
+---
+title: "Ultimate Genome Preprocessing Pipeline"
+subtitle: "Repeat masking and annotation preparation for comparative genomics"
+jupyter: python3
+---
+
+## Project Overview
+
+This notebook provides a comprehensive preprocessing pipeline for genome annotation, preparing raw genomic sequences (.fna) for comparative genomics analysis. The workflow follows best practices for repeat masking and gene prediction preparation.
+
+### Workflow Summary
+
+The preprocessing pipeline consists of five major steps:
+
+1. **Repeat Masking** - Identify and mask repetitive elements using RepeatModeler and RepeatMasker
+2. **OrthoDB Reference** - Prepare protein reference database for evidence-based annotation
+3. **BRAKER2 Annotation** - Ab initio gene prediction with protein evidence (runs on host machine)
+4. **Sequence Extraction** - Extract protein and CDS sequences from annotations
+5. **Quality Assessment** - Evaluate annotation completeness using BUSCO
+
+### Species List (13 genomes)
+
+This analysis processes 13 fish species, matching the OrthoFinder comparative genomics analysis:
+
+| # | Species | Common Description |
+|---|---------|-------------------|
+| 1 | Anabarilius_grahami | Kunming noodlefish |
+| 2 | Aspiorhynchus_laticeps | Xinjiang big-head fish |
+| 3 | Carassius_auratus | Goldfish |
+| 4 | Cyprinus_carpio | Common carp |
+| 5 | Danio_rerio | Zebrafish |
+| 6 | Gymnocypris_eckloni | Naked carp |
+| 7 | Labeo_rohita | Rohu |
+| 8 | Onychostoma_macrolepis | Largescale shoveljaw fish |
+| 9 | Oxygymnocypris_stewartii | Stewart's naked carp |
+| 10 | Schizothorax_macropogon | Schizothoracine fish |
+| 11 | Sinocyclocheilus_grahami | Golden-line fish |
+| 12 | Triplophysa_bombifrons | Stone loach |
+| 13 | Triplophysa_dalaica | Dalai stone loach |
+
+### Input/Output Summary
+
+- **Input**: Raw genomic sequences (`.fna` files) from NCBI datasets
+- **Output**: Masked genomes, gene annotations (`.gff3`), protein sequences (`.faa`), CDS sequences
+
+## Environment Setup
+
+```{python}
+import os
+import sys
+import glob
+import logging
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Display environment information
+print("Python executable:", sys.executable)
+print("Working directory:", os.getcwd())
+```
+
+```py
+print("Working directory:", os.getcwd())
+print("\nContents of ./DB/:")
+for item in sorted(os.listdir("./DB/")):
+  path = f"./DB/{item}"
+  if os.path.isfile(path):
+      size = os.path.getsize(path) / (1024**3)
+      print(f"  [FILE] {item} ({size:.2f} GB)")
+  else:
+      print(f"  [DIR]  {item}/")
+```
+
+### Define Species List
+
+```{python}
+# Species list matching OrthoFinder analysis (13 species)
+SPECIES_LIST = [
+    "Anabarilius_grahami",
+    "Aspiorhynchus_laticeps",
+    "Carassius_auratus",
+    "Cyprinus_carpio",
+    "Danio_rerio",
+    "Gymnocypris_eckloni",
+    "Labeo_rohita",
+    "Onychostoma_macrolepis",
+    "Oxygymnocypris_stewartii",
+    "Schizothorax_macropogon",
+    "Sinocyclocheilus_grahami",
+    "Triplophysa_bombifrons",
+    "Triplophysa_dalaica",
+]
+
+print(f"Total species to process: {len(SPECIES_LIST)}")
+for i, species in enumerate(SPECIES_LIST, 1):
+    print(f"  {i:2d}. {species}")
+```
+
+### Verify Conda Environment
+
+```{python}
+# Check genome_annotation_env tools
+print("Checking genome_annotation_env tools...")
+!conda run -n genome_annotation_env RepeatModeler -version 2>/dev/null || echo "RepeatModeler: Not found or version check failed"
+!conda run -n genome_annotation_env RepeatMasker -version 2>/dev/null | head -2 || echo "RepeatMasker: Not found"
+!conda run -n genome_annotation_env gffread --version 2>&1 | head -1 || echo "gffread: Not found"
+!conda run -n genome_annotation_env busco --version 2>/dev/null || echo "BUSCO: Not found"
+```
+
+### Create Output Directories
+
+```{python}
+def create_output_directories():
+    """
+    Create the output directory structure for preprocessing results.
+
+    Creates:
+    --------
+    - ./Outputs/Preprocessing/RepeatModeler/{species}/
+    - ./Outputs/Preprocessing/RepeatMasker/{species}/
+    - ./Outputs/Preprocessing/BRAKER/{species}/          (masked genome results)
+    - ./Outputs/Preprocessing/BRAKER_UNMASKED/{species}/ (unmasked genome results - for comparison)
+    - ./Outputs/Preprocessing/BUSCO/{species}/           (masked genome BUSCO)
+    - ./Outputs/Preprocessing/BUSCO_UNMASKED/{species}/  (unmasked genome BUSCO - for comparison)
+    """
+
+    base_dirs = [
+        "./Outputs/Preprocessing/RepeatModeler",
+        "./Outputs/Preprocessing/RepeatMasker",
+        "./Outputs/Preprocessing/BRAKER",
+        "./Outputs/Preprocessing/BRAKER_UNMASKED",
+        "./Outputs/Preprocessing/BUSCO",
+        "./Outputs/Preprocessing/BUSCO_UNMASKED",
+    ]
+
+    for base_dir in base_dirs:
+        os.makedirs(base_dir, exist_ok=True)
+        for species in SPECIES_LIST:
+            species_dir = os.path.join(base_dir, species)
+            os.makedirs(species_dir, exist_ok=True)
+
+    print("Output directory structure created:")
+    for base_dir in base_dirs:
+        print(f"  {base_dir}/")
+
+create_output_directories()
+```
+
+## Input Data Verification
+
+### Define Genome Path Mapping
+
+```{python}
+def validate_genome_path(path):
+    """
+    Validate that a path points to a genome assembly file, NOT a CDS/RNA file.
+
+    Parameters:
+    -----------
+    path : str
+        Path to validate
+
+    Returns:
+    --------
+    tuple : (is_valid, error_message)
+
+    Notes:
+    ------
+    NCBI datasets often include multiple .fna files:
+    - GCA_*_genomic.fna      : Full genome assembly (CORRECT)
+    - cds_from_genomic.fna   : Coding sequences only (WRONG for RepeatMasker/BRAKER)
+    - rna_from_genomic.fna   : RNA sequences only (WRONG)
+
+    Using CDS files instead of genome assemblies will cause:
+    - RepeatMasker: FastaDB errors due to complex FASTA headers
+    - BRAKER: Failure because CDS files lack intergenic regions
+    """
+    if not path:
+        return False, "Path is None or empty"
+
+    if not os.path.exists(path):
+        return False, f"File does not exist: {path}"
+
+    basename = os.path.basename(path)
+
+    # Check for common wrong file types
+    if basename.startswith('cds_'):
+        return False, (
+            f"ERROR: '{basename}' is a CDS file (coding sequences only)!\n"
+            f"       RepeatMasker and BRAKER require the FULL GENOME ASSEMBLY.\n"
+            f"       Look for a file like 'GCA_*_genomic.fna' or 'GCF_*_genomic.fna'"
+        )
+
+    if basename.startswith('rna_'):
+        return False, (
+            f"ERROR: '{basename}' is an RNA file!\n"
+            f"       RepeatMasker and BRAKER require the FULL GENOME ASSEMBLY."
+        )
+
+    # Check file size - genome assemblies are typically > 100MB
+    size_mb = os.path.getsize(path) / (1024**2)
+    if size_mb < 50:
+        return False, (
+            f"WARNING: File is only {size_mb:.1f} MB - this seems too small for a genome assembly.\n"
+            f"         Fish genomes are typically 500MB - 2GB.\n"
+            f"         Please verify this is the correct file: {basename}"
+        )
+
+    return True, f"OK: {basename} ({size_mb:.0f} MB)"
+
+
+def get_genome_path(species):
+    """
+    Get the path to the genomic .fna file for a species.
+
+    Parameters:
+    -----------
+    species : str
+        Species name (e.g., "Danio_rerio")
+
+    Returns:
+    --------
+    str : Path to the .fna file, or None if not found
+
+    Notes:
+    ------
+    Searches in the standard NCBI dataset directory structure:
+    ./DB/GENOME_Comparison/{species}/ncbi_dataset/data/GCA_*/
+
+    IMPORTANT: This function automatically excludes:
+    - cds_from_genomic.fna  : CDS sequences (WRONG - causes RepeatMasker errors)
+    - rna_from_genomic.fna  : RNA sequences (WRONG)
+
+    Only returns the actual genome assembly file (e.g., GCA_*_genomic.fna)
+    """
+
+    base_path = f"./DB/GENOME_Comparison/{species}/ncbi_dataset/data"
+
+    # Search for GCA or GCF directories
+    if os.path.exists(base_path):
+        for assembly_dir in os.listdir(base_path):
+            if assembly_dir.startswith(("GCA_", "GCF_")):
+                # Find .fna file (genomic sequence)
+                assembly_path = os.path.join(base_path, assembly_dir)
+                fna_files = glob.glob(os.path.join(assembly_path, "*_genomic.fna"))
+
+                # CRITICAL: Filter out CDS and RNA files - we need the actual genome assembly
+                # Using CDS files causes RepeatMasker FastaDB errors and BRAKER failures
+                genome_files = [f for f in fna_files
+                               if not os.path.basename(f).startswith(('cds_', 'rna_'))]
+
+                if genome_files:
+                    # Validate the selected file
+                    selected = genome_files[0]
+                    is_valid, msg = validate_genome_path(selected)
+                    if not is_valid:
+                        logger.warning(f"{species}: {msg}")
+                    return selected
+
+    return None
+
+
+def get_all_genome_paths():
+    """
+    Get genome paths for all species in the analysis.
+
+    Returns:
+    --------
+    dict : Species name -> genome path mapping
+    """
+
+    genome_paths = {}
+
+    for species in SPECIES_LIST:
+        path = get_genome_path(species)
+        genome_paths[species] = path
+
+    return genome_paths
+```
+
+### Verify Input Files
+
+```{python}
+def verify_input_genomes():
+    """
+    Verify all input genome files exist and display their information.
+
+    This function:
+    1. Finds the correct genome assembly file for each species
+    2. Validates that it's NOT a CDS or RNA file (common mistake)
+    3. Checks file size to ensure it's a full genome assembly
+    """
+
+    print("=" * 70)
+    print("INPUT GENOME VERIFICATION")
+    print("=" * 70)
+    print()
+    print("NOTE: Automatically excluding CDS and RNA files from selection.")
+    print("      Only full genome assemblies (GCA_*_genomic.fna) are used.")
+    print()
+
+    genome_paths = get_all_genome_paths()
+
+    found_count = 0
+    missing_species = []
+    validation_issues = []
+
+    for species, path in genome_paths.items():
+        if path and os.path.exists(path):
+            # Validate the selected file
+            is_valid, validation_msg = validate_genome_path(path)
+            size_gb = os.path.getsize(path) / (1024**3)
+
+            if is_valid:
+                print(f"✓ [OK] {species}")
+                print(f"       File: {os.path.basename(path)}")
+                print(f"       Size: {size_gb:.2f} GB")
+                found_count += 1
+            else:
+                print(f"⚠ [WARNING] {species}")
+                print(f"       {validation_msg}")
+                validation_issues.append((species, validation_msg))
+                found_count += 1
+        else:
+            print(f"✗ [MISSING] {species}")
+            missing_species.append(species)
+
+    print("-" * 70)
+    print(f"Summary: {found_count}/{len(SPECIES_LIST)} genomes found")
+
+    if missing_species:
+        print(f"Missing species: {', '.join(missing_species)}")
+
+    if validation_issues:
+        print(f"\n⚠ Validation warnings: {len(validation_issues)}")
+        for species, msg in validation_issues:
+            print(f"  - {species}: {msg.split(chr(10))[0]}")
+
+    return genome_paths
+
+# Execute verification
+GENOME_PATHS = verify_input_genomes()
+```
+
+#### Out[7]: ✓ Done 0.0s
+```
+======================================================================
+INPUT GENOME VERIFICATION
+======================================================================
+
+NOTE: Automatically excluding CDS and RNA files from selection.
+      Only full genome assemblies (GCA_*_genomic.fna) are used.
+
+✓ [OK] Anabarilius_grahami
+       File: GCA_003731715.1_BGI_Agra_1.0_genomic.fna
+       Size: 0.94 GB
+✓ [OK] Aspiorhynchus_laticeps
+       File: GCA_023376895.1_ASM2337689v1_genomic.fna
+       Size: 1.49 GB
+✓ [OK] Carassius_auratus
+       File: GCA_003368295.1_ASM336829v1_genomic.fna
+       Size: 1.72 GB
+✓ [OK] Cyprinus_carpio
+       File: GCF_018340385.1_ASM1834038v1_genomic.fna
+       Size: 1.59 GB
+✓ [OK] Danio_rerio
+       File: GCF_000002035.6_GRCz11_genomic.fna
+       Size: 1.58 GB
+✓ [OK] Gymnocypris_eckloni
+       File: GCA_027564155.1_ASM2756415v1_genomic.fna
+       Size: 0.89 GB
+✓ [OK] Labeo_rohita
+       File: GCA_022985175.1_IGBB_LRoh.1.0_genomic.fna
+       Size: 1.06 GB
+✓ [OK] Onychostoma_macrolepis
+       File: GCA_012432095.1_ASM1243209v1_genomic.fna
+       Size: 0.84 GB
+✓ [OK] Oxygymnocypris_stewartii
+       File: GCA_003573665.1_Novo_Ost_1.0_genomic.fna
+       Size: 1.75 GB
+✓ [OK] Schizothorax_macropogon
+       File: GCA_041051915.1_ASM4105191v1_genomic.fna
+       Size: 1.34 GB
+✓ [OK] Sinocyclocheilus_grahami
+       File: GCA_001515645.1_SAMN03320097.WGS_v1.1_genomic.fna
+       Size: 1.65 GB
+✓ [OK] Triplophysa_bombifrons
+       File: GCA_029783895.1_ASM2978389v1_genomic.fna
+       Size: 0.62 GB
+✓ [OK] Triplophysa_dalaica
+       File: GCA_015846415.1_ASM1584641v1_genomic.fna
+       Size: 0.57 GB
+----------------------------------------------------------------------
+Summary: 13/13 genomes found
+```
+
+
+## Step 1: Repeat Masking
+
+Repeat masking is essential before gene prediction to prevent transposable elements from being incorrectly annotated as genes. This step uses RepeatModeler for de novo repeat identification and RepeatMasker for masking.
+
+### 1.1 BuildDatabase - Create Genome Database
+
+```{python}
+def build_repeat_database(species, genome_path, output_dir, threads=8):
+    """
+    Build RepeatModeler database from genome assembly.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    genome_path : str
+        Path to genomic .fna file
+    output_dir : str
+        Output directory for database files
+    threads : int
+        Number of threads for processing
+
+    Returns:
+    --------
+    str : Path to database prefix
+
+    Notes:
+    ------
+    Creates database files that RepeatModeler uses for de novo repeat identification.
+    Output files: {db_name}.nhr, {db_name}.nin, {db_name}.nsq, etc.
+    """
+
+    db_name = f"{species}_db"
+    db_path = os.path.join(output_dir, db_name)
+
+    cmd = f"""conda run -n genome_annotation_env BuildDatabase \
+        -name {db_path} \
+        {genome_path}"""
+
+    logger.info(f"Building database for {species}...")
+    print(f"Command: {cmd}")
+
+    return db_path, cmd
+
+
+# Example for single species
+example_species = SPECIES_LIST[0]
+if GENOME_PATHS.get(example_species):
+    output_dir = f"./Outputs/Preprocessing/RepeatModeler/{example_species}"
+    db_path, cmd = build_repeat_database(
+        example_species,
+        GENOME_PATHS[example_species],
+        output_dir
+    )
+    print(f"\nDatabase will be created at: {db_path}")
+```
+
+### 1.2 RepeatModeler - De Novo Repeat Identification
+
+```{python}
+def run_repeat_modeler(species, db_path, threads=8):
+    """
+    Run RepeatModeler for de novo repeat family identification.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    db_path : str
+        Path to RepeatModeler database prefix
+    threads : int
+        Number of parallel threads
+
+    Returns:
+    --------
+    tuple : (families_file, command)
+
+    Notes:
+    ------
+    RepeatModeler generates:
+    - {db_name}-families.fa : Consensus sequences for identified repeat families
+    - {db_name}-families.stk : Seed alignments in Stockholm format
+
+    Output is placed in RM_* directory within the working directory.
+    """
+
+    cmd = f"""conda run -n genome_annotation_env RepeatModeler \
+        -database {db_path} \
+        -threads {threads} \
+        -engine ncbi"""
+
+    families_file = f"{db_path}-families.fa"
+
+    logger.info(f"Running RepeatModeler for {species}...")
+    print(f"Command: {cmd}")
+    print(f"\nExpected output: {families_file}")
+
+    return families_file, cmd
+
+
+# Example command
+if GENOME_PATHS.get(example_species):
+    families_file, cmd = run_repeat_modeler(example_species, db_path)
+```
+
+### 1.3 RepeatMasker - Mask Repeats
+
+```{python}
+def run_repeat_masker(species, genome_path, families_file, output_dir, threads=8):
+    """
+    Run RepeatMasker to mask repetitive elements in the genome.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    genome_path : str
+        Path to genomic .fna file
+    families_file : str
+        Path to RepeatModeler output (families.fa)
+    output_dir : str
+        Output directory for masked genome
+    threads : int
+        Number of parallel threads
+
+    Returns:
+    --------
+    tuple : (masked_genome_path, command)
+
+    Notes:
+    ------
+    The -xsmall option softmasks (lowercase) instead of hardmasks (N's),
+    which is preferred for BRAKER2 annotation.
+
+    Output files:
+    - {genome}.masked : Softmasked genome sequence
+    - {genome}.out : Detailed repeat annotation
+    - {genome}.tbl : Summary table of repeats
+    """
+
+    cmd = f"""conda run -n genome_annotation_env RepeatMasker \
+        -lib {families_file} \
+        -xsmall \
+        -pa {threads} \
+        -dir {output_dir} \
+        {genome_path}"""
+
+    # Masked output will be named after input file
+    genome_basename = os.path.basename(genome_path)
+    masked_path = os.path.join(output_dir, f"{genome_basename}.masked")
+
+    logger.info(f"Running RepeatMasker for {species}...")
+    print(f"Command: {cmd}")
+    print(f"\nExpected masked genome: {masked_path}")
+
+    return masked_path, cmd
+
+
+# Example command
+if GENOME_PATHS.get(example_species):
+    output_dir = f"./Outputs/Preprocessing/RepeatMasker/{example_species}"
+    masked_path, cmd = run_repeat_masker(
+        example_species,
+        GENOME_PATHS[example_species],
+        families_file,
+        output_dir
+    )
+```
+
+### 1.4 Complete Repeat Masking Pipeline
+
+```{python}
+def generate_repeat_masking_commands(species_list, genome_paths, threads=8):
+    """
+    Generate all repeat masking commands for batch processing.
+
+    Parameters:
+    -----------
+    species_list : list
+        List of species names
+    genome_paths : dict
+        Species -> genome path mapping
+    threads : int
+        Threads per job
+
+    Returns:
+    --------
+    dict : Species -> list of commands
+    """
+
+    all_commands = {}
+
+    for species in species_list:
+        genome_path = genome_paths.get(species)
+        if not genome_path:
+            logger.warning(f"Skipping {species}: genome not found")
+            continue
+
+        rm_output = f"./Outputs/Preprocessing/RepeatModeler/{species}"
+        mask_output = f"./Outputs/Preprocessing/RepeatMasker/{species}"
+
+        db_path = os.path.join(rm_output, f"{species}_db")
+        families_file = f"{db_path}-families.fa"
+
+        commands = [
+            f"# Step 1: Build database for {species}",
+            f"conda run -n genome_annotation_env BuildDatabase -name {db_path} {genome_path}",
+            "",
+            f"# Step 2: Run RepeatModeler for {species}",
+            f"conda run -n genome_annotation_env RepeatModeler -database {db_path} -threads {threads} -engine ncbi",
+            "",
+            f"# Step 3: Run RepeatMasker for {species}",
+            f"conda run -n genome_annotation_env RepeatMasker -lib {families_file} -xsmall -pa {threads} -dir {mask_output} {genome_path}",
+        ]
+
+        all_commands[species] = commands
+
+    return all_commands
+
+
+# Generate commands for all species
+repeat_commands = generate_repeat_masking_commands(SPECIES_LIST, GENOME_PATHS)
+
+# Display commands for first species as example
+print("=" * 70)
+print("REPEAT MASKING COMMANDS (Example for first species)")
+print("=" * 70)
+if repeat_commands:
+    first_species = list(repeat_commands.keys())[0]
+    for cmd in repeat_commands[first_species]:
+        print(cmd)
+```
+
+## Step 2: OrthoDB Reference Database
+
+OrthoDB provides curated orthologous protein sequences used as evidence for gene prediction in BRAKER2.
+
+### 2.1 Verify OrthoDB Database
+
+```{python}
+def verify_orthodb_database():
+    """
+    Verify the OrthoDB Metazoa protein database exists.
+
+    Expected location: ./DB/Metazoa.fa
+
+    If not present, download from:
+    https://bioinf.uni-greifswald.de/bioinf/partitioned_odb12/Metazoa.fa.gz
+    """
+
+    orthodb_path = "./DB/Metazoa.fa"
+
+    print("=" * 70)
+    print("ORTHODB DATABASE VERIFICATION")
+    print("=" * 70)
+
+    if os.path.exists(orthodb_path):
+        size_gb = os.path.getsize(orthodb_path) / (1024**3)
+        print(f"[OK] OrthoDB Metazoa database found")
+        print(f"     Path: {orthodb_path}")
+        print(f"     Size: {size_gb:.2f} GB")
+        return orthodb_path
+    else:
+        print(f"[MISSING] OrthoDB database not found at {orthodb_path}")
+        print("\nDownload instructions:")
+        print("  wget https://bioinf.uni-greifswald.de/bioinf/partitioned_odb12/Metazoa.fa.gz -O ./DB/Metazoa.fa.gz")
+        print("  gunzip ./DB/Metazoa.fa.gz")
+        return None
+
+ORTHODB_PATH = verify_orthodb_database()
+```
+
+### 2.2 Download OrthoDB (if needed)
+
+```{python}
+# Uncomment and run if OrthoDB database is missing
+# !mkdir -p ./DB
+# !wget https://bioinf.uni-greifswald.de/bioinf/partitioned_odb12/Metazoa.fa.gz -O ./DB/Metazoa.fa.gz
+# !gunzip ./DB/Metazoa.fa.gz
+```
+
+## Step 3: BRAKER3 Gene Annotation
+
+BRAKER3 combines GeneMark-ETP with AUGUSTUS for ab initio gene prediction enhanced with protein evidence from OrthoDB.
+
+> **Note**: This step uses the `braker3_env` conda environment installed via `0-ultimate-env_construction.qmd`.
+
+### 3.1 BRAKER3 Command Template
+
+```{python}
+def generate_braker_command(species, masked_genome_path, orthodb_path, output_dir, threads=16):
+    """
+    Generate BRAKER3 conda command for a species.
+
+    Parameters:
+    -----------
+    species : str
+        Species name (used for AUGUSTUS species config)
+    masked_genome_path : str
+        Path to softmasked genome (.fna.masked)
+    orthodb_path : str
+        Path to OrthoDB protein database
+    output_dir : str
+        Output directory for BRAKER results
+    threads : int
+        Number of CPU threads
+
+    Returns:
+    --------
+    str : Ready-to-run conda command
+    """
+
+    cmd = f"""conda run -n braker3_env braker.pl \\
+    --genome={masked_genome_path} \\
+    --prot_seq={orthodb_path} \\
+    --species={species} \\
+    --softmasking \\
+    --threads={threads} \\
+    --gff3 \\
+    --workingdir={output_dir}"""
+
+    return cmd
+
+
+# Display template for all species
+print("=" * 70)
+print("BRAKER3 COMMAND TEMPLATES")
+print("=" * 70)
+print()
+print("Prerequisites:")
+print("  1. braker3_env conda environment installed (see 0-ultimate-env_construction.qmd)")
+print("  2. GeneMark-ETP downloaded and configured (manual license required)")
+print("  3. Repeat-masked genomes from Step 1")
+print("  4. OrthoDB database (Metazoa.fa)")
+print()
+print("-" * 70)
+
+for species in SPECIES_LIST:
+    mask_output = f"./Outputs/Preprocessing/RepeatMasker/{species}"
+    genome_path = GENOME_PATHS.get(species)
+
+    if genome_path:
+        genome_basename = os.path.basename(genome_path)
+        masked_path = os.path.join(mask_output, f"{genome_basename}.masked")
+        braker_output = f"./Outputs/Preprocessing/BRAKER/{species}"
+
+        cmd = generate_braker_command(
+            species,
+            masked_path,
+            "./DB/Metazoa.fa",
+            braker_output
+        )
+
+        print(f"\n# {species}")
+        print(cmd)
+```
+
+### 3.2 BRAKER3 Parameter Explanation
+
+| Parameter | Description |
+|-----------|-------------|
+| `--genome` | Path to softmasked genome assembly |
+| `--prot_seq` | Protein sequences for evidence (OrthoDB) |
+| `--species` | Unique species identifier for AUGUSTUS config |
+| `--softmasking` | Indicates genome is softmasked (lowercase repeats) |
+| `--threads` | Number of CPU threads for parallel processing. **Note**: Use `--threads=1` for highly fragmented assemblies (>50,000 scaffolds) to avoid GeneMark-ES failures. |
+| `--gff3` | Output annotations in GFF3 format |
+| `--workingdir` | Output directory for results |
+
+### 3.3 Expected BRAKER3 Outputs
+
+After BRAKER3 completes, each species directory will contain:
+
+```
+./Outputs/Preprocessing/BRAKER/{species}/
+├── braker.gff3          # Gene annotations in GFF3 format
+├── braker.gtf           # Gene annotations in GTF format
+├── braker.codingseq     # Coding sequences (CDS)
+├── braker.aa            # Protein sequences
+├── hintsfile.gff        # Hints used for prediction
+├── augustus.hints.gtf   # AUGUSTUS predictions with hints
+└── GeneMark-ES/         # GeneMark intermediate files
+```
+
+## Step 4: Sequence Extraction with gffread
+
+Extract protein and CDS sequences from BRAKER3 annotations.
+
+### 4.1 Extract Protein Sequences
+
+```{python}
+def extract_proteins(species, masked_genome_path, gff_path, output_dir):
+    """
+    Extract protein sequences from genome using gffread.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    masked_genome_path : str
+        Path to masked genome
+    gff_path : str
+        Path to BRAKER GFF3 annotation
+    output_dir : str
+        Output directory
+
+    Returns:
+    --------
+    tuple : (output_path, command)
+    """
+
+    output_path = os.path.join(output_dir, f"{species}_proteins.faa")
+
+    cmd = f"""conda run -n genome_annotation_env gffread \\
+    -g {masked_genome_path} \\
+    -y {output_path} \\
+    {gff_path}"""
+
+    return output_path, cmd
+
+
+def extract_cds(species, masked_genome_path, gff_path, output_dir):
+    """
+    Extract CDS sequences from genome using gffread.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    masked_genome_path : str
+        Path to masked genome
+    gff_path : str
+        Path to BRAKER GFF3 annotation
+    output_dir : str
+        Output directory
+
+    Returns:
+    --------
+    tuple : (output_path, command)
+    """
+
+    output_path = os.path.join(output_dir, f"{species}_cds.fna")
+
+    cmd = f"""conda run -n genome_annotation_env gffread \\
+    -g {masked_genome_path} \\
+    -x {output_path} \\
+    {gff_path}"""
+
+    return output_path, cmd
+```
+
+### 4.2 Generate Extraction Commands
+
+```{python}
+print("=" * 70)
+print("SEQUENCE EXTRACTION COMMANDS")
+print("=" * 70)
+print()
+
+for species in SPECIES_LIST[:3]:  # Show first 3 as examples
+    genome_path = GENOME_PATHS.get(species)
+    if not genome_path:
+        continue
+
+    genome_basename = os.path.basename(genome_path)
+    mask_output = f"./Outputs/Preprocessing/RepeatMasker/{species}"
+    masked_path = os.path.join(mask_output, f"{genome_basename}.masked")
+
+    braker_output = f"./Outputs/Preprocessing/BRAKER/{species}"
+    gff_path = os.path.join(braker_output, "braker.gff3")
+
+    protein_path, protein_cmd = extract_proteins(species, masked_path, gff_path, braker_output)
+    cds_path, cds_cmd = extract_cds(species, masked_path, gff_path, braker_output)
+
+    print(f"\n# {species}")
+    print(f"# Extract proteins:")
+    print(protein_cmd)
+    print(f"\n# Extract CDS:")
+    print(cds_cmd)
+
+print("\n... (commands for remaining species follow same pattern)")
+```
+
+## Step 5: Quality Assessment with BUSCO
+
+BUSCO (Benchmarking Universal Single-Copy Orthologs) assesses the completeness of genome annotations by searching for conserved genes.
+
+### 5.1 Run BUSCO on Protein Sequences
+
+```{python}
+def run_busco(species, protein_path, output_dir, lineage="actinopterygii_odb12", threads=8):
+    """
+    Run BUSCO quality assessment on protein sequences.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    protein_path : str
+        Path to protein sequences (.faa)
+    output_dir : str
+        Output directory for BUSCO results
+    lineage : str
+        BUSCO lineage dataset (default: actinopterygii_odb12 for fish)
+    threads : int
+        Number of threads
+
+    Returns:
+    --------
+    tuple : (output_path, command)
+
+    Notes:
+    ------
+    The actinopterygii_odb12 lineage is appropriate for ray-finned fishes.
+    Alternative lineages:
+    - vertebrata_odb12 : All vertebrates
+    - cyprinodontiformes_odb12 : Cyprinodontiform fishes (if available)
+    """
+
+    run_name = f"{species}_busco"
+
+    cmd = f"""conda run -n genome_annotation_env busco \\
+    -i {protein_path} \\
+    -l {lineage} \\
+    -m protein \\
+    -o {run_name} \\
+    --out_path {output_dir} \\
+    -c {threads}"""
+
+    return os.path.join(output_dir, run_name), cmd
+
+
+# Generate BUSCO commands
+print("=" * 70)
+print("BUSCO QUALITY ASSESSMENT COMMANDS")
+print("=" * 70)
+print()
+print(f"Lineage: actinopterygii_odb12 (Ray-finned fishes)")
+print()
+
+for species in SPECIES_LIST[:3]:  # Show first 3 as examples
+    braker_output = f"./Outputs/Preprocessing/BRAKER/{species}"
+    protein_path = os.path.join(braker_output, f"{species}_proteins.faa")
+    busco_output = f"./Outputs/Preprocessing/BUSCO/{species}"
+
+    result_path, cmd = run_busco(species, protein_path, busco_output)
+
+    print(f"\n# {species}")
+    print(cmd)
+
+print("\n... (commands for remaining species follow same pattern)")
+```
+
+### 5.2 BUSCO Results Interpretation
+
+BUSCO results are reported as:
+
+- **C**: Complete BUSCOs (found and complete)
+  - **S**: Single-copy (expected for most genes)
+  - **D**: Duplicated (may indicate genome duplication events)
+- **F**: Fragmented (partially found)
+- **M**: Missing (not found)
+
+**Quality thresholds:**
+- **Excellent**: C > 95%
+- **Good**: C > 90%
+- **Acceptable**: C > 80%
+- **Poor**: C < 80%
+
+## Batch Processing Functions
+
+### Complete Pipeline for Single Species
+
+```{python}
+def preprocess_single_species(species, genome_path, orthodb_path, threads=8):
+    """
+    Generate complete preprocessing pipeline for a single species.
+
+    Parameters:
+    -----------
+    species : str
+        Species name
+    genome_path : str
+        Path to genomic .fna file
+    orthodb_path : str
+        Path to OrthoDB database
+    threads : int
+        Number of threads per step
+
+    Returns:
+    --------
+    dict : Dictionary containing all commands and expected outputs
+
+    Notes:
+    ------
+    This pipeline includes BOTH masked and unmasked BRAKER runs for comparison:
+    - 4_braker: Uses repeat-masked genome (production quality)
+    - 4.5_braker_unmasked: Uses original unmasked genome (for comparison)
+
+    This allows evaluation of how repeat masking affects gene prediction accuracy.
+
+    IMPORTANT: Protein extraction uses BRAKER's built-in output (braker.aa) instead of gffread.
+    This avoids sequence ID mismatch issues where BRAKER/AUGUSTUS modifies FASTA headers
+    (replacing spaces with underscores), causing gffread to fail with "couldn't find fasta record" errors.
+    """
+
+    genome_basename = os.path.basename(genome_path)
+
+    # Define output paths
+    rm_output = f"./Outputs/Preprocessing/RepeatModeler/{species}"
+    mask_output = f"./Outputs/Preprocessing/RepeatMasker/{species}"
+    braker_output = f"./Outputs/Preprocessing/BRAKER/{species}"
+    braker_unmasked_output = f"./Outputs/Preprocessing/BRAKER_UNMASKED/{species}"
+    busco_output = f"./Outputs/Preprocessing/BUSCO/{species}"
+    busco_unmasked_output = f"./Outputs/Preprocessing/BUSCO_UNMASKED/{species}"
+
+    db_path = os.path.join(rm_output, f"{species}_db")
+    families_file = f"{db_path}-families.fa"
+    masked_path = os.path.join(mask_output, f"{genome_basename}.masked")
+
+    # Masked outputs - use BRAKER's direct output (braker.aa)
+    gff_path = os.path.join(braker_output, "braker.gff3")
+    braker_protein_path = os.path.join(braker_output, "braker.aa")  # BRAKER's built-in output
+    protein_path = os.path.join(braker_output, f"{species}_proteins.faa")
+
+    # Unmasked outputs - use BRAKER's direct output (braker.aa)
+    gff_unmasked_path = os.path.join(braker_unmasked_output, "braker.gff3")
+    braker_unmasked_protein_path = os.path.join(braker_unmasked_output, "braker.aa")  # BRAKER's built-in output
+    protein_unmasked_path = os.path.join(braker_unmasked_output, f"{species}_proteins.faa")
+
+    pipeline = {
+        'species': species,
+        'steps': {
+            '1_build_db': {
+                'command': f"conda run -n genome_annotation_env BuildDatabase -name {db_path} {genome_path}",
+                'output': db_path
+            },
+            '2_repeat_modeler': {
+                'command': f"conda run -n genome_annotation_env RepeatModeler -database {db_path} -threads {threads} -engine ncbi",
+                'output': families_file
+            },
+            '3_repeat_masker': {
+                'command': f"conda run -n genome_annotation_env RepeatMasker -lib {families_file} -xsmall -pa {threads} -dir {mask_output} {genome_path}",
+                'output': masked_path
+            },
+            '4_braker': {
+                'command': f"conda run -n braker3_env braker.pl --genome={masked_path} --prot_seq={orthodb_path} --species={species} --softmasking --threads={threads} --gff3 --workingdir={braker_output}",
+                'output': gff_path,
+                'note': 'BRAKER with repeat-masked genome (production quality)'
+            },
+            '4.5_braker_unmasked': {
+                'command': f"conda run -n braker3_env braker.pl --genome={genome_path} --prot_seq={orthodb_path} --species={species}_unmasked --threads={threads} --gff3 --workingdir={braker_unmasked_output}",
+                'output': gff_unmasked_path,
+                'note': 'BRAKER with original unmasked genome (for comparison)'
+            },
+            '5_copy_proteins': {
+                'command': f"cp {braker_protein_path} {protein_path}",
+                'output': protein_path,
+                'note': 'Copy BRAKER protein output (avoids gffread ID mismatch issues)'
+            },
+            '5.5_copy_proteins_unmasked': {
+                'command': f"cp {braker_unmasked_protein_path} {protein_unmasked_path}",
+                'output': protein_unmasked_path,
+                'note': 'Copy BRAKER protein output (avoids gffread ID mismatch issues)'
+            },
+            '6_busco': {
+                'command': f"conda run -n genome_annotation_env busco -i {protein_path} -l actinopterygii_odb12 -m protein -o {species}_busco --out_path {busco_output} -c {threads}",
+                'output': os.path.join(busco_output, f"{species}_busco")
+            },
+            '6.5_busco_unmasked': {
+                'command': f"conda run -n genome_annotation_env busco -i {protein_unmasked_path} -l actinopterygii_odb12 -m protein -o {species}_unmasked_busco --out_path {busco_unmasked_output} -c {threads}",
+                'output': os.path.join(busco_unmasked_output, f"{species}_unmasked_busco")
+            }
+        }
+    }
+
+    return pipeline
+
+
+# Generate pipeline for all species
+def generate_all_pipelines():
+    """Generate preprocessing pipelines for all species."""
+
+    pipelines = {}
+
+    for species in SPECIES_LIST:
+        genome_path = GENOME_PATHS.get(species)
+        if genome_path:
+            pipelines[species] = preprocess_single_species(
+                species,
+                genome_path,
+                "./DB/Metazoa.fa"
+            )
+
+    return pipelines
+
+ALL_PIPELINES = generate_all_pipelines()
+print(f"Generated pipelines for {len(ALL_PIPELINES)} species")
+```
+
+### Export Commands to Shell Script
+
+```{python}
+def export_commands_to_script(pipelines, output_file="./scripts/preprocess_all.sh"):
+    """
+    Export all preprocessing commands to a shell script.
+
+    Parameters:
+    -----------
+    pipelines : dict
+        Species -> pipeline mapping
+    output_file : str
+        Output shell script path
+
+    Notes:
+    ------
+    The script includes GeneMark-ETP path setup using absolute paths ($(pwd))
+    to avoid "No such file or directory" errors when conda changes the working directory.
+    """
+
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    with open(output_file, 'w') as f:
+        f.write("#!/bin/bash\n")
+        f.write("# Genome Preprocessing Pipeline\n")
+        f.write("# Generated by 0-ultimate-preprocessing.qmd\n")
+        f.write("#\n")
+        f.write("# IMPORTANT: This script requires GeneMark-ETP to be installed.\n")
+        f.write("# Download from: http://exon.gatech.edu/GeneMark/license_download.cgi\n")
+        f.write("#\n")
+        f.write("set -euo pipefail\n\n")
+
+        # Add GeneMark path setup
+        f.write("# ============================================================\n")
+        f.write("# GeneMark-ETP Path Setup (REQUIRED for BRAKER3)\n")
+        f.write("# ============================================================\n")
+        f.write("# IMPORTANT: Use absolute paths to avoid 'No such file or directory' errors\n")
+        f.write("# when conda run changes the working directory.\n")
+        f.write("#\n")
+        f.write("# Adjust these paths if your GeneMark-ETP is installed elsewhere.\n")
+        f.write("# ============================================================\n\n")
+        f.write('export GENEMARK_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"\n')
+        f.write('export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes/ProtHint/bin"\n\n')
+        f.write("# Verify GeneMark paths exist\n")
+        f.write('if [ ! -d "$GENEMARK_PATH" ]; then\n')
+        f.write('    echo "ERROR: GENEMARK_PATH not found: $GENEMARK_PATH"\n')
+        f.write('    echo "Please download GeneMark-ETP from http://exon.gatech.edu/GeneMark/license_download.cgi"\n')
+        f.write('    echo "and extract to ./Apps/GeneMark-ETP/"\n')
+        f.write('    exit 1\n')
+        f.write('fi\n\n')
+        f.write('echo "Using GENEMARK_PATH: $GENEMARK_PATH"\n')
+        f.write('echo "Using PROTHINT_PATH: $PROTHINT_PATH"\n')
+        f.write('echo ""\n\n')
+
+        for species, pipeline in pipelines.items():
+            f.write(f"\n# {'=' * 60}\n")
+            f.write(f"# {species}\n")
+            f.write(f"# {'=' * 60}\n\n")
+
+            for step_name, step_info in pipeline['steps'].items():
+                f.write(f"# {step_name}\n")
+                if step_info.get('note'):
+                    f.write(f"# NOTE: {step_info['note']}\n")
+                f.write(f"{step_info['command']}\n\n")
+
+    print(f"Commands exported to: {output_file}")
+    print(f"Make executable with: chmod +x {output_file}")
+
+# Export commands
+export_commands_to_script(ALL_PIPELINES)
+```
+
+### Export Quick Test Script (Skip RepeatModeler)
+
+For quick testing of the BRAKER conda setup, this script uses the original genome files directly without repeat masking. This is useful to verify the pipeline works before running the time-consuming RepeatModeler step.
+
+```{python}
+def export_quick_test_script(genome_paths, output_file="./scripts/braker_quick_test.sh"):
+    """
+    Export a quick test script that skips RepeatModeler and uses original genomes.
+
+    This allows rapid verification of the BRAKER conda setup before
+    investing hours in repeat masking.
+
+    Parameters:
+    -----------
+    genome_paths : dict
+        Species -> genome path mapping
+    output_file : str
+        Output shell script path
+
+    Notes:
+    ------
+    WARNING: Results from this test are NOT suitable for production use.
+    Repeat masking is essential for accurate gene prediction.
+    """
+
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    with open(output_file, 'w') as f:
+        f.write("#!/bin/bash\n")
+        f.write("# BRAKER Quick Test Script (Skip RepeatModeler)\n")
+        f.write("# Generated by 0-ultimate-preprocessing.qmd\n")
+        f.write("#\n")
+        f.write("# WARNING: This script skips repeat masking for QUICK TESTING ONLY!\n")
+        f.write("# Results are NOT suitable for production use.\n")
+        f.write("# Use preprocess_all.sh for the complete pipeline.\n")
+        f.write("#\n")
+        f.write("# Usage: ./braker_quick_test.sh [species_name]\n")
+        f.write("# Example: ./braker_quick_test.sh Anabarilius_grahami\n")
+        f.write("#\n")
+        f.write("set -euo pipefail\n\n")
+
+        # Create output directory
+        f.write("# Create test output directory\n")
+        f.write("mkdir -p ./Outputs/Preprocessing/BRAKER_TEST\n\n")
+
+        # GeneMark and ProtHint path setup
+        f.write("# Set GeneMark and ProtHint paths (REQUIRED - download manually from http://exon.gatech.edu/GeneMark/license_download.cgi)\n")
+        f.write("# Adjust these paths to match your GeneMark-ETP installation location\n")
+        f.write('GENEMARK_BASE="./Apps/GeneMark-ETP/gmetp_linux_64"\n\n')
+
+        f.write('if [ -z "${GENEMARK_PATH:-}" ]; then\n')
+        f.write('    if [ -d "${GENEMARK_BASE}/bin/gmes" ]; then\n')
+        f.write('        export GENEMARK_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"\n')
+        f.write('        echo "Setting GENEMARK_PATH=$GENEMARK_PATH"\n')
+        f.write('    else\n')
+        f.write('        echo "ERROR: GeneMark-ETP not found!"\n')
+        f.write('        echo ""\n')
+        f.write('        echo "GeneMark requires manual download due to licensing restrictions."\n')
+        f.write('        echo "Please follow these steps:"\n')
+        f.write('        echo "  1. Visit: http://exon.gatech.edu/GeneMark/license_download.cgi"\n')
+        f.write('        echo "  2. Download GeneMark-ETP for Linux 64-bit"\n')
+        f.write('        echo "  3. Extract to ./Apps/GeneMark-ETP/"\n')
+        f.write('        echo "  4. Copy license key: cp ./Apps/GeneMark-ETP/gmetp_linux_64/gm_key_64 ~/.gm_key"\n')
+        f.write('        echo "  5. Re-run this script"\n')
+        f.write('        exit 1\n')
+        f.write('    fi\n')
+        f.write('fi\n\n')
+
+        f.write('# Set ProtHint path (bundled with GeneMark-ETP)\n')
+        f.write('if [ -z "${PROTHINT_PATH:-}" ]; then\n')
+        f.write('    if [ -d "${GENEMARK_BASE}/bin/gmes/ProtHint/bin" ]; then\n')
+        f.write('        export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes/ProtHint/bin"\n')
+        f.write('    elif [ -d "${GENEMARK_BASE}/ProtHint/bin" ]; then\n')
+        f.write('        export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/ProtHint/bin"\n')
+        f.write('    elif [ -d "./Apps/GeneMark-ETP/ProtHint/bin" ]; then\n')
+        f.write('        export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/ProtHint/bin"\n')
+        f.write('    else\n')
+        f.write('        echo "WARNING: ProtHint not found in expected locations."\n')
+        f.write('        echo "Please check your GeneMark-ETP installation and set PROTHINT_PATH manually."\n')
+        f.write('        exit 1\n')
+        f.write('    fi\n')
+        f.write('    echo "Setting PROTHINT_PATH=$PROTHINT_PATH"\n')
+        f.write('fi\n\n')
+
+        # Add species selection
+        f.write("# Select species (default: first species for quick test)\n")
+        f.write('SPECIES="${1:-Anabarilius_grahami}"\n\n')
+
+        f.write("echo \"========================================\"\n")
+        f.write("echo \"BRAKER Quick Test (No Repeat Masking)\"\n")
+        f.write("echo \"Species: $SPECIES\"\n")
+        f.write("echo \"========================================\"\n")
+        f.write("echo \"\"\n")
+        f.write("echo \"WARNING: This is for testing only!\"\n")
+        f.write("echo \"Production runs should use repeat-masked genomes.\"\n")
+        f.write("echo \"\"\n\n")
+
+        # Add case statement for each species
+        f.write("case $SPECIES in\n")
+
+        for species, genome_path in genome_paths.items():
+            if genome_path:
+                test_output = f"./Outputs/Preprocessing/BRAKER_TEST/{species}"
+                f.write(f"    {species})\n")
+                f.write(f"        GENOME=\"{genome_path}\"\n")
+                f.write(f"        OUTDIR=\"{test_output}\"\n")
+                f.write(f"        ;;\n")
+
+        f.write("    *)\n")
+        f.write("        echo \"Unknown species: $SPECIES\"\n")
+        f.write("        echo \"Available species:\"\n")
+        for species in genome_paths.keys():
+            f.write(f"        echo \"  - {species}\"\n")
+        f.write("        exit 1\n")
+        f.write("        ;;\n")
+        f.write("esac\n\n")
+
+        # Create output directory and run BRAKER
+        f.write("mkdir -p \"$OUTDIR\"\n\n")
+
+        f.write("echo \"Running BRAKER test on: $GENOME\"\n")
+        f.write("echo \"Output directory: $OUTDIR\"\n")
+        f.write("echo \"\"\n\n")
+
+        # BRAKER command with conda
+        f.write("conda run -n braker3_env braker.pl \\\n")
+        f.write("    --genome=\"$GENOME\" \\\n")
+        f.write("    --prot_seq=./DB/Metazoa.fa \\\n")
+        f.write("    --species=\"${SPECIES}_test\" \\\n")
+        f.write("    --threads=16 \\\n")
+        f.write("    --gff3 \\\n")
+        f.write("    --workingdir=\"$OUTDIR\"\n\n")
+
+        f.write("echo \"\"\n")
+        f.write("echo \"========================================\"\n")
+        f.write("echo \"Quick test completed!\"\n")
+        f.write("echo \"Check results in: $OUTDIR\"\n")
+        f.write("echo \"========================================\"\n")
+
+    print(f"Quick test script exported to: {output_file}")
+    print(f"Make executable with: chmod +x {output_file}")
+    print()
+    print("Usage:")
+    print(f"  {output_file} Anabarilius_grahami  # Test specific species")
+    print(f"  {output_file}                      # Test default species")
+
+# Export quick test script
+export_quick_test_script(GENOME_PATHS)
+```
+
+## Results Summary
+
+### Verify Processing Outputs
+
+```{python}
+def check_preprocessing_status():
+    """
+    Check the status of preprocessing for all species.
+
+    Returns a summary of which steps have been completed.
+    Includes both masked and unmasked BRAKER results.
+    """
+
+    print("=" * 100)
+    print("PREPROCESSING STATUS SUMMARY")
+    print("=" * 100)
+    print()
+    print("Legend: BRAKER = masked genome, BRAKER_U = unmasked genome (for comparison)")
+    print()
+
+    status_table = []
+
+    for species in SPECIES_LIST:
+        status = {
+            'species': species,
+            'input': False,
+            'repeat_db': False,
+            'masked': False,
+            'braker': False,
+            'braker_u': False,
+            'proteins': False,
+            'proteins_u': False,
+            'busco': False,
+            'busco_u': False
+        }
+
+        # Check input genome
+        if GENOME_PATHS.get(species):
+            status['input'] = True
+
+        # Check RepeatModeler database
+        db_path = f"./Outputs/Preprocessing/RepeatModeler/{species}/{species}_db-families.fa"
+        if os.path.exists(db_path):
+            status['repeat_db'] = True
+
+        # Check masked genome (approximate path)
+        mask_dir = f"./Outputs/Preprocessing/RepeatMasker/{species}"
+        if os.path.exists(mask_dir) and glob.glob(os.path.join(mask_dir, "*.masked")):
+            status['masked'] = True
+
+        # Check BRAKER output (masked)
+        braker_gff = f"./Outputs/Preprocessing/BRAKER/{species}/braker.gff3"
+        if os.path.exists(braker_gff):
+            status['braker'] = True
+
+        # Check BRAKER output (unmasked)
+        braker_unmasked_gff = f"./Outputs/Preprocessing/BRAKER_UNMASKED/{species}/braker.gff3"
+        if os.path.exists(braker_unmasked_gff):
+            status['braker_u'] = True
+
+        # Check protein extraction (masked)
+        protein_path = f"./Outputs/Preprocessing/BRAKER/{species}/{species}_proteins.faa"
+        if os.path.exists(protein_path):
+            status['proteins'] = True
+
+        # Check protein extraction (unmasked)
+        protein_unmasked_path = f"./Outputs/Preprocessing/BRAKER_UNMASKED/{species}/{species}_proteins.faa"
+        if os.path.exists(protein_unmasked_path):
+            status['proteins_u'] = True
+
+        # Check BUSCO (masked)
+        busco_dir = f"./Outputs/Preprocessing/BUSCO/{species}/{species}_busco"
+        if os.path.exists(busco_dir):
+            status['busco'] = True
+
+        # Check BUSCO (unmasked)
+        busco_unmasked_dir = f"./Outputs/Preprocessing/BUSCO_UNMASKED/{species}/{species}_unmasked_busco"
+        if os.path.exists(busco_unmasked_dir):
+            status['busco_u'] = True
+
+        status_table.append(status)
+
+    # Display status
+    print(f"{'Species':<28} {'Input':^6} {'RepDB':^6} {'Mask':^6} {'BRAK':^6} {'BRAK_U':^6} {'Prot':^6} {'Prot_U':^6} {'BUSC':^6} {'BUSC_U':^6}")
+    print("-" * 100)
+
+    for status in status_table:
+        row = f"{status['species']:<28}"
+        for key in ['input', 'repeat_db', 'masked', 'braker', 'braker_u', 'proteins', 'proteins_u', 'busco', 'busco_u']:
+            symbol = "[OK]" if status[key] else "[ ]"
+            row += f" {symbol:^6}"
+        print(row)
+
+    return status_table
+
+# Check current status
+status_table = check_preprocessing_status()
+```
+
+### Output File Locations
+
+After completing all steps, outputs will be located at:
+
+```
+./Outputs/Preprocessing/
+├── RepeatModeler/
+│   └── {species}/
+│       ├── {species}_db-families.fa    # Repeat consensus sequences
+│       └── {species}_db-families.stk   # Repeat seed alignments
+│
+├── RepeatMasker/
+│   └── {species}/
+│       ├── *.fna.masked                # Softmasked genome
+│       ├── *.fna.out                   # Repeat annotation details
+│       └── *.fna.tbl                   # Repeat summary table
+│
+├── BRAKER/                             # Results from MASKED genome (production)
+│   └── {species}/
+│       ├── braker.gff3                 # Gene annotations
+│       ├── braker.aa                   # BRAKER's direct protein output
+│       ├── braker.codingseq            # BRAKER's direct CDS output
+│       ├── {species}_proteins.faa      # Copy of braker.aa (for consistent naming)
+│       └── hintsfile.gff               # Evidence hints used
+│
+├── BRAKER_UNMASKED/                    # Results from UNMASKED genome (comparison)
+│   └── {species}/
+│       ├── braker.gff3                 # Gene annotations
+│       ├── braker.aa                   # BRAKER's direct protein output
+│       ├── braker.codingseq            # BRAKER's direct CDS output
+│       ├── {species}_proteins.faa      # Copy of braker.aa (for consistent naming)
+│       └── hintsfile.gff               # Evidence hints used
+│
+├── BUSCO/                              # BUSCO for masked results
+│   └── {species}/
+│       └── {species}_busco/
+│           ├── short_summary.txt       # BUSCO summary
+│           └── full_table.tsv          # Detailed results
+│
+└── BUSCO_UNMASKED/                     # BUSCO for unmasked results (comparison)
+    └── {species}/
+        └── {species}_unmasked_busco/
+            ├── short_summary.txt       # BUSCO summary
+            └── full_table.tsv          # Detailed results
+```
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+#### 1. RepeatModeler Running Out of Memory
+
+**Symptom**: RepeatModeler crashes with memory errors on large genomes.
+
+**Solution**:
+- Reduce parallel threads with `-pa` option
+- Use a machine with more RAM (recommend 64GB+ for large fish genomes)
+- Consider running on subset of scaffolds first
+
+```bash
+# Reduce threads
+RepeatModeler -database genome_db -threads 8 -engine ncbi
+```
+
+#### 2. RepeatMasker Perl Errors
+
+**Symptom**: Perl-related errors during RepeatMasker execution.
+
+**Solution**: Install perl-File-Which module:
+
+```bash
+conda install -n genome_annotation_env -y perl-file-which
+```
+
+#### 3. BRAKER2 Species Config Conflicts
+
+**Symptom**: BRAKER fails due to existing AUGUSTUS species configuration.
+
+**Solution**: Use unique species names or specify a fresh species config:
+
+```bash
+braker.pl --species=Danio_rerio_v2 ...  # Add version suffix
+```
+
+#### 4. BUSCO Database Download Issues
+
+**Symptom**: BUSCO cannot download lineage database.
+
+**Solution**: Pre-download the database:
+
+```bash
+busco --download actinopterygii_odb12
+```
+
+#### 5. Low BUSCO Scores
+
+**Symptom**: BUSCO completeness below 80%.
+
+**Possible causes**:
+- Poor genome assembly quality
+- Incomplete gene predictions
+- Wrong lineage dataset
+
+**Solutions**:
+- Check genome assembly quality with assembly-stats
+- Review BRAKER2 logs for errors
+- Try different BUSCO lineage (e.g., `vertebrata_odb12`)
+
+#### 6. RepeatMasker FastaDB Errors (Wrong Input File)
+
+**Symptom**: RepeatMasker shows errors like:
+```
+FastaDB:_cleanIndexAndCompact - ERROR: Multiple fasta seqs appear on one line
+```
+
+**Cause**: You used `cds_from_genomic.fna` instead of the genome assembly file.
+
+NCBI datasets contain multiple `.fna` files:
+| File | Size | Purpose |
+|------|------|---------|
+| `GCA_*_genomic.fna` | ~1 GB | **Full genome assembly (CORRECT)** |
+| `cds_from_genomic.fna` | ~40 MB | CDS sequences only (WRONG) |
+| `rna_from_genomic.fna` | ~10 MB | RNA sequences only (WRONG) |
+
+**Solution**: Always use the full genome assembly file:
+
+```bash
+# WRONG - CDS file (causes errors)
+RepeatMasker ... ./path/to/cds_from_genomic.fna
+
+# CORRECT - Full genome assembly
+RepeatMasker ... ./path/to/GCA_003731715.1_BGI_Agra_1.0_genomic.fna
+```
+
+**Why this matters**:
+- CDS files have complex FASTA headers that confuse RepeatMasker's parser
+- CDS files lack intergenic regions where repeats are most abundant
+- BRAKER requires full genome assemblies to predict genes properly
+
+The `get_genome_path()` function in this notebook automatically filters out CDS/RNA files.
+
+#### 7. "Checking for E. coli insertion elements" Message
+
+**Symptom**: RepeatMasker shows repeated "Checking for E. coli insertion elements" messages.
+
+**Cause**: This is **normal behavior**, NOT an error.
+
+RepeatMasker performs this check on ALL genomes (including fish) because:
+- Genome assemblies often contain trace E. coli DNA contamination from cloning vectors
+- E. coli insertion sequences (IS elements) are common laboratory contaminants
+- This is a standard quality control step in bioinformatics
+
+**Action**: No action needed - this is expected behavior.
+
+#### 8. gffread "couldn't find fasta record" Error
+
+**Symptom**: When running gffread to extract proteins, you get:
+```
+Warning: couldn't find fasta record for 'RJVU01000001.1_Anabarilius_grahami_isolate_AG-KIZ_scaffold100002_cov130,_whole_genome_shotgun_sequence'!
+Error: no genomic sequence available (check -g option!).
+```
+
+**Cause**: BRAKER/AUGUSTUS modifies sequence names internally by replacing spaces with underscores. The GFF3 file uses these modified names, but the original FASTA file has the original names with spaces.
+
+- Original FASTA: `>RJVU01000001.1 Anabarilius grahami isolate AG-KIZ scaffold100002_cov130`
+- GFF3 uses: `RJVU01000001.1_Anabarilius_grahami_isolate_AG-KIZ_scaffold100002_cov130`
+
+**Solution**: Use BRAKER's built-in protein output (`braker.aa`) instead of gffread extraction:
+
+```bash
+# DON'T use gffread (ID mismatch issues)
+# gffread -g genome.fna -y proteins.faa braker.gff3
+
+# DO use BRAKER's direct output
+cp ./Outputs/Preprocessing/BRAKER/{species}/braker.aa ./Outputs/Preprocessing/BRAKER/{species}/{species}_proteins.faa
+```
+
+**Why this works**: BRAKER generates `braker.aa` internally using its own sequence ID mapping, avoiding the mismatch problem entirely.
+
+#### 9. BRAKER3 GeneMark-ES Failures on Fragmented Assemblies
+
+**Symptom**: BRAKER3 fails with error:
+```
+ERROR in file braker.pl at line 5255
+Failed to execute: gmes_petap.pl --verbose --cores=8 --ES ...
+```
+
+With warning:
+```
+file genome.fa contains a highly fragmented assembly (80398 scaffolds).
+You should run braker.pl in linear mode on such genomes (--threads=1).
+```
+
+**Cause**: GeneMark-ES can fail silently on highly fragmented genome assemblies when running in parallel mode. This affects assemblies with tens of thousands of scaffolds.
+
+**Solutions**:
+
+1. **Check the GeneMark-ES error log first**:
+   ```bash
+   cat ./Outputs/Preprocessing/BRAKER/{species}/errors/GeneMark-ES.stderr
+   ```
+
+2. **Re-run with single thread mode**:
+   ```bash
+   # Delete previous failed run
+   rm -rf ./Outputs/Preprocessing/BRAKER/{species}
+
+   # Re-run with --threads=1
+   conda run -n braker3_env braker.pl \
+       --genome=./Outputs/Preprocessing/RepeatMasker/{species}/*.fna.masked \
+       --prot_seq=./DB/Metazoa.fa \
+       --species={species} \
+       --softmasking \
+       --threads=1 \
+       --gff3 \
+       --workingdir=./Outputs/Preprocessing/BRAKER/{species}
+   ```
+
+3. **Verify GeneMark license key**:
+   ```bash
+   # Check if .gm_key exists
+   ls -la ~/.gm_key
+
+   # If missing, copy from GeneMark installation
+   cp /path/to/GeneMark-ETP/gm_key_64 ~/.gm_key
+   ```
+
+4. **Check Perl dependencies**:
+   ```bash
+   perl -e "use YAML; use Parallel::ForkManager; print 'OK\n'"
+   ```
+
+**Prevention**: For assemblies with >50,000 scaffolds, consider using `--threads=1` from the start. While slower, it avoids GeneMark-ES parallel mode failures.
+
+#### 10. GeneMark "No such file or directory" Error (Relative Path Issue)
+
+**Symptom**: BRAKER3 fails with error:
+```
+Can't open perl script "Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes/gmes_petap.pl": No such file or directory
+```
+
+**Cause**: You're using a **relative path** for `GENEMARK_PATH` (e.g., `Apps/GeneMark-ETP/...`), but when `conda run` executes BRAKER, it may change the working directory. The relative path then fails to resolve.
+
+**Solution**: Always use **absolute paths** for GeneMark environment variables:
+
+```bash
+# WRONG - relative path (will fail)
+export GENEMARK_PATH=Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes
+
+# CORRECT - absolute path using $(pwd)
+export GENEMARK_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"
+export PROTHINT_PATH="$(pwd)/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes/ProtHint/bin"
+```
+
+Or use the full absolute path:
+```bash
+export GENEMARK_PATH="/home/jovyan/Apps/GeneMark-ETP/gmetp_linux_64/bin/gmes"
+```
+
+**Prevention**: The generated `preprocess_all.sh` script automatically sets up absolute paths using `$(pwd)`. Always run the script from the project root directory.
+
+### Tips for Large Genome Processing
+
+1. **Use SSDs**: I/O-intensive steps benefit greatly from SSD storage
+2. **Monitor memory**: Large genomes may require 64-128GB RAM
+3. **Batch processing**: Run species sequentially to avoid resource conflicts
+4. **Checkpointing**: Each step produces outputs that can be resumed from
+5. **Log files**: Save stdout/stderr for troubleshooting
+
+## Conclusion
+
+This preprocessing pipeline prepares raw genomic sequences for comparative genomics analysis through systematic repeat masking and gene annotation. The workflow produces high-quality protein and CDS sequences suitable for downstream analyses including:
+
+- OrthoFinder orthology inference
+- Phylogenetic analysis
+- Functional annotation with EggNOG
+- Synteny analysis with MCScanX
+
+### Next Steps
+
+After completing this preprocessing:
+
+1. **Verify outputs** using the status check function
+2. **Review BUSCO scores** to ensure annotation quality
+3. **Proceed to OrthoFinder** analysis (Notebook 1-2)
+4. **Run functional annotation** with EggNOG mapper
+
+`★ Insight ─────────────────────────────────────`
+**Key points about genome preprocessing:**
+- Repeat masking prevents ~40-60% of fish genomes (repeat content) from being mis-annotated
+- Softmasking (lowercase) is preferred over hardmasking (N's) as it preserves sequence information
+- BRAKER2 with protein evidence typically achieves higher accuracy than ab initio methods alone
+- BUSCO scores directly correlate with downstream analysis reliability
+`─────────────────────────────────────────────────`
+
+## Troubleshooting
+### Error
+```
+ERROR in file /opt/BRAKER/scripts/braker.pl at line 1240
+Failed to create direcotry /home/jovyan/Outputs/Preprocessing/BRAKER_TEST/Anabarilius_grahami/GeneMark-ES!
+```
+
+### Solution
+rm -rf ./Outputs/Preprocessing/BRAKER_TEST/Anabarilius_grahami

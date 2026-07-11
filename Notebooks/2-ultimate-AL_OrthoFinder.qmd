@@ -22,7 +22,7 @@ First, let's verify our working directory and available data:
 ```
 
 ```{python}
-!ls ./DB/GENOME_Comparison/FAA/
+!ls {get_path('database.faa_dir')}/
 ```
 
 ## Method
@@ -31,12 +31,301 @@ Analysis on [14 Species](./DB/GENOME_Comparison/FAA/)
 
 The initial dataset contained 14 fish species, but due to sequence quality issues with one species, the final analysis was performed on 13 species.
 
+## FAA File Preparation
+
+Before running OrthoFinder, we need to prepare the FAA (protein FASTA) files from BRAKER outputs. This section copies the predicted protein sequences (`braker.aa`) from each species and prepares them for OrthoFinder analysis.
+
+### Data Source
+
+The protein sequences come from BRAKER3 annotation run on unmasked genomes (BRAKER_UNMASKED), which provides predicted amino acid sequences for all genes.
+
+- **Source**: `./Outputs/Preprocessing/BRAKER_UNMASKED/{species}/braker.aa`
+- **Target**: `./DB/GENOME_Comparison/FAA/{species}.faa`
+
+### Configuration
+
+```{python}
+from pathlib import Path
+
+# Load centralized path configuration
+import sys
+sys.path.insert(0, './Notebooks/config')
+from load_config import load_paths, get_path, get_version, get_species_list, get_focal_species
+
+# Configuration
+BRAKER_SOURCE_DIR = Path(get_path('cds.base_dir'))
+FAA_TARGET_DIR = Path(get_path('database.faa_dir'))
+
+# Species list (13 species)
+SPECIES_LIST = get_species_list()
+
+print(f"Source: {BRAKER_SOURCE_DIR}")
+print(f"Target: {FAA_TARGET_DIR}")
+print(f"Species: {len(SPECIES_LIST)}")
+```
+
+### Verify Source Files Exist
+
+```{python}
+def check_braker_outputs():
+    """
+    Verify that braker.aa files exist for all species.
+
+    Returns
+    -------
+    tuple
+        (available_species, missing_species)
+    """
+    available = []
+    missing = []
+
+    print("Checking BRAKER output availability...")
+    print("-" * 50)
+
+    for species in SPECIES_LIST:
+        braker_aa = BRAKER_SOURCE_DIR / species / "braker.aa"
+        if braker_aa.exists():
+            size_mb = braker_aa.stat().st_size / (1024 * 1024)
+            print(f"  [OK]    {species}: braker.aa ({size_mb:.1f} MB)")
+            available.append(species)
+        else:
+            print(f"  [MISS]  {species}: braker.aa NOT FOUND")
+            missing.append(species)
+
+    print("-" * 50)
+    print(f"Available: {len(available)}/{len(SPECIES_LIST)}")
+    print(f"Missing:   {len(missing)}")
+
+    return available, missing
+
+
+available_species, missing_species = check_braker_outputs()
+```
+
+### Validate Sequence Quality
+
+BRAKER amino acid sequences may contain invalid characters that cause Diamond/OrthoFinder to fail. This validation step checks for common issues:
+
+```{python}
+def validate_fasta_file(fasta_path: Path) -> dict:
+    """
+    Validate a FASTA file for common sequence issues.
+
+    Parameters
+    ----------
+    fasta_path : Path
+        Path to the FASTA file
+
+    Returns
+    -------
+    dict
+        Validation results with keys:
+        - 'sequence_count': Number of sequences
+        - 'has_dots': Whether sequences contain dots (.)
+        - 'has_asterisks': Whether sequences contain stop codons (*)
+        - 'dot_count': Number of lines with dots
+        - 'issues': List of issue descriptions
+    """
+    results = {
+        "sequence_count": 0,
+        "has_dots": False,
+        "has_asterisks": False,
+        "dot_count": 0,
+        "asterisk_count": 0,
+        "issues": [],
+    }
+
+    with open(fasta_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(">"):
+                results["sequence_count"] += 1
+            else:
+                # Check for problematic characters
+                if "." in line:
+                    results["has_dots"] = True
+                    results["dot_count"] += 1
+                if "*" in line:
+                    results["has_asterisks"] = True
+                    results["asterisk_count"] += 1
+
+    # Generate issue descriptions
+    if results["has_dots"]:
+        results["issues"].append(
+            f"Contains dots (.) in {results['dot_count']} lines - "
+            "may cause Diamond errors"
+        )
+    if results["has_asterisks"]:
+        results["issues"].append(
+            f"Contains stop codons (*) in {results['asterisk_count']} lines - "
+            "generally acceptable but may need handling"
+        )
+
+    return results
+
+
+def validate_all_species():
+    """Validate braker.aa files for all available species."""
+    print("Validating sequence files...")
+    print("-" * 60)
+
+    all_results = {}
+    species_with_issues = []
+
+    for species in available_species:
+        braker_aa = BRAKER_SOURCE_DIR / species / "braker.aa"
+        results = validate_fasta_file(braker_aa)
+        all_results[species] = results
+
+        status = "OK"
+        if results["issues"]:
+            status = "WARN"
+            species_with_issues.append(species)
+
+        print(f"  [{status:4s}] {species}: {results['sequence_count']:,} sequences")
+        for issue in results["issues"]:
+            print(f"         - {issue}")
+
+    print("-" * 60)
+    print(f"Species with potential issues: {len(species_with_issues)}")
+
+    return all_results, species_with_issues
+
+
+validation_results, species_with_issues = validate_all_species()
+```
+
+### Clean and Copy FAA Files
+
+This function cleans sequences by removing trailing dots (which cause Diamond errors) while preserving stop codons:
+
+```{python}
+def clean_and_copy_faa(species: str, remove_dots: bool = True) -> dict:
+    """
+    Copy braker.aa to FAA directory with optional cleaning.
+
+    Parameters
+    ----------
+    species : str
+        Species name
+    remove_dots : bool
+        If True, remove trailing dots from sequences
+
+    Returns
+    -------
+    dict
+        Copy statistics
+    """
+    source = BRAKER_SOURCE_DIR / species / "braker.aa"
+    target = FAA_TARGET_DIR / f"{species}.faa"
+
+    stats = {
+        "sequences": 0,
+        "lines_cleaned": 0,
+        "source_size": source.stat().st_size,
+        "target_size": 0,
+    }
+
+    # Ensure target directory exists
+    FAA_TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(source) as infile, open(target, "w") as outfile:
+        for line in infile:
+            if line.startswith(">"):
+                stats["sequences"] += 1
+                outfile.write(line)
+            else:
+                # Clean trailing dots if requested
+                if remove_dots and line.rstrip().endswith("."):
+                    # Remove trailing dots but preserve newline
+                    cleaned = line.rstrip().rstrip(".") + "\n"
+                    stats["lines_cleaned"] += 1
+                    outfile.write(cleaned)
+                else:
+                    outfile.write(line)
+
+    stats["target_size"] = target.stat().st_size
+
+    return stats
+
+
+def prepare_all_faa_files():
+    """Prepare FAA files for all available species."""
+    print("Preparing FAA files for OrthoFinder...")
+    print("-" * 60)
+
+    total_sequences = 0
+    total_cleaned = 0
+    copied_count = 0
+
+    for species in available_species:
+        stats = clean_and_copy_faa(species, remove_dots=True)
+
+        total_sequences += stats["sequences"]
+        total_cleaned += stats["lines_cleaned"]
+        copied_count += 1
+
+        size_mb = stats["target_size"] / (1024 * 1024)
+        status = f"{stats['sequences']:,} seqs"
+        if stats["lines_cleaned"] > 0:
+            status += f" ({stats['lines_cleaned']} lines cleaned)"
+
+        print(f"  [DONE] {species}.faa: {status} ({size_mb:.1f} MB)")
+
+    print("-" * 60)
+    print(f"Total species copied: {copied_count}")
+    print(f"Total sequences: {total_sequences:,}")
+    print(f"Total lines cleaned: {total_cleaned:,}")
+
+    return copied_count, total_sequences
+
+
+copied, sequences = prepare_all_faa_files()
+```
+
+### Verify FAA Directory Contents
+
+```{python}
+# List FAA files ready for OrthoFinder
+print("FAA files ready for OrthoFinder:")
+print("-" * 50)
+
+faa_files = sorted(FAA_TARGET_DIR.glob("*.faa"))
+for faa_file in faa_files:
+    # Skip OrthoFinder output directory
+    if faa_file.is_file():
+        size_mb = faa_file.stat().st_size / (1024 * 1024)
+        print(f"  {faa_file.name}: {size_mb:.1f} MB")
+
+print("-" * 50)
+print(f"Total FAA files: {len(faa_files)}")
+```
+
+### Handle Missing Species
+
+If any species are missing, check the data source:
+
+```{python}
+if missing_species:
+    print("WARNING: The following species are missing BRAKER outputs:")
+    for species in missing_species:
+        print(f"  - {species}")
+    print()
+    print("Options:")
+    print("  1. Run copy_outputs_from_hpc.sh to fetch from HPC")
+    print("  2. Check if BRAKER completed on HPC for these species")
+    print("  3. Proceed with available species only")
+else:
+    print("All species have BRAKER outputs available.")
+    print("Proceeding to OrthoFinder analysis...")
+```
+
 ## Initial OrthoFinder Execution
 
 Let's start the OrthoFinder analysis:
 
 ```{python}
-!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+!conda run -n env_orthofinder orthofinder -f {get_path('database.faa_dir')}/
 ```
 
 ### Initial Error Encountered
@@ -89,7 +378,7 @@ Now modify the diamond configuration to include `--ignore-warnings`:
 Retry OrthoFinder with the modified configuration:
 
 ```{python}
-!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+!conda run -n env_orthofinder orthofinder -f {get_path('database.faa_dir')}/
 ```
 
 ### Result of Troubleshooting 1
@@ -108,13 +397,13 @@ The issue is with dots (.) at the end of sequences in the FASTA files. Let's rem
 **Solution**: Remove trailing dots from sequences in the problematic file.
 
 ```{python}
-!sed -i 's/\.\s*$//' ./DB/GENOME_Comparison/FAA/Triplophysa_yarkandensis.faa
+!sed -i 's/\.\s*$//' {get_path('database.faa_dir')}/Triplophysa_yarkandensis.faa
 ```
 
 Retry OrthoFinder after cleaning the sequences:
 
 ```{python}
-!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+!conda run -n env_orthofinder orthofinder -f {get_path('database.faa_dir')}/
 ```
 
 ### Result of Troubleshooting 2
@@ -141,7 +430,7 @@ rm ./DB/GENOME_Comparison/FAA/Triplophysa_yarkandensis.faa
 After removing the problematic species, run OrthoFinder on the remaining 13 species:
 
 ```{python}
-!conda run -n env_orthofinder orthofinder -f ./DB/GENOME_Comparison/FAA/
+!conda run -n env_orthofinder orthofinder -f {get_path('database.faa_dir')}/
 ```
 
 ### Complete Successful Output

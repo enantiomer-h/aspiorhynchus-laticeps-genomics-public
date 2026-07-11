@@ -31,6 +31,39 @@ This notebook provides a comprehensive workflow for preparing enrichment analysi
 - Custom OrgDb database package
 - Gene-to-GO and gene-to-pathway mapping files
 
+## Load Configuration
+
+```{r}
+#| vscode: {languageId: r}
+# Install yaml package if not available (required for config loading)
+if (!requireNamespace("yaml", quietly = TRUE)) {
+  cat("Installing required 'yaml' package...\n")
+  install.packages("yaml", repos = "https://cloud.r-project.org")
+}
+
+# Load centralized path configuration
+source("./Notebooks/config/load_config.R")
+load_paths(config_path = "/home/jovyan/Notebooks/config/paths-set2.yaml", force_reload = TRUE)
+
+# Display configuration summary
+cat(sprintf("Configuration loaded: OrthoFinder Results_%s\n", get_version()))
+
+# Define paths from centralized config
+ORTHOFINDER_OUTPUTS <- get_path("orthofinder.results_dir")
+FOCAL_CDS <- get_path(paste0("cds.", get_focal_species()))
+KEGG_JSON <- get_path("database.kegg_json")
+EGGNOG_DB <- get_path("database.eggnog")
+ORG_DB_PATH <- get_path("database.org_db")
+EGGNOG_OUTPUT <- get_path("eggnog.output_dir")
+GO_ENRICHMENT_DIR <- get_path("outputs.go_enrichment")
+
+# Display configuration summary
+cat(sprintf("OrthoFinder results: %s\n", ORTHOFINDER_OUTPUTS))
+cat(sprintf("Focal species CDS: %s\n", FOCAL_CDS))
+cat(sprintf("KEGG JSON: %s\n", KEGG_JSON))
+cat(sprintf("Eggnog output: %s\n", EGGNOG_OUTPUT))
+```
+
 ## System Setup and Requirements
 
 ```{r}
@@ -39,10 +72,10 @@ R.home()
 output <- system("pwd", intern = TRUE)
 print(paste("Working directory:", output))
 
-# Create necessary output directories
-system("mkdir -p './Outputs/Eggnog'")
-system("mkdir -p './Outputs/GO_Enrichment'")
-system("mkdir -p './Outputs/KEGG_Enrichment'")
+# Create necessary output directories using config paths
+system(paste("mkdir -p", shQuote(EGGNOG_OUTPUT)))
+system(paste("mkdir -p", shQuote(get_path("outputs.go_enrichment"))))
+system(paste("mkdir -p", shQuote(get_path("outputs.ko_enrichment"))))
 
 # Check eggnog-mapper version and log it
 system("conda run -n eggnog_env emapper.py --version > ./Apps/eggnog.version")
@@ -53,20 +86,108 @@ system("conda run -n eggnog_env emapper.py --version > ./Apps/eggnog.version")
 ### Annotate CDS Sequences
 
 ```{r}
-# Annotate Aspiorhynchus_laticeps CDS sequences using eggnog-mapper
+# Annotate Diptychus_maculatus CDS sequences using eggnog-mapper
 # This step performs comprehensive functional annotation including GO terms and KEGG pathways
+# Uses BRAKER3 CDS output from centralized config
+
+# =============================================================================
+# DEBUG: Verify all paths before running
+# =============================================================================
+cat("=== Path Verification ===\n\n")
+
+cat("1. Input CDS file (FOCAL_CDS):\n")
+cat("   Path:", FOCAL_CDS, "\n")
+cat("   Exists:", file.exists(FOCAL_CDS), "\n")
+if (file.exists(FOCAL_CDS)) {
+  file_info <- file.info(FOCAL_CDS)
+  cat("   Size:", format(file_info$size, big.mark=","), "bytes\n")
+}
+
+cat("\n2. Eggnog database directory (EGGNOG_DB):\n")
+cat("   Path:", EGGNOG_DB, "\n")
+cat("   Exists:", dir.exists(EGGNOG_DB), "\n")
+if (dir.exists(EGGNOG_DB)) {
+  db_files <- list.files(EGGNOG_DB, pattern = "\\.db$|\\.dmnd$", full.names = FALSE)
+  cat("   Database files found:", length(db_files), "\n")
+  if (length(db_files) > 0) {
+    cat("   Files:", paste(head(db_files, 5), collapse = ", "),
+        ifelse(length(db_files) > 5, "...", ""), "\n")
+  }
+}
+
+cat("\n3. Output directory (EGGNOG_OUTPUT):\n")
+cat("   Path:", EGGNOG_OUTPUT, "\n")
+cat("   Exists:", dir.exists(EGGNOG_OUTPUT), "\n")
+
+# =============================================================================
+# Build and display the annotation command
+# =============================================================================
+output_prefix <- paste0(EGGNOG_OUTPUT, "/Eggnog")
+
 annotation_command <- paste(
   "conda run -n eggnog_env emapper.py",
-  "--data_dir ./DB/Eggnog",
+  paste("--data_dir", shQuote(EGGNOG_DB)),
   "--itype CDS",
-  "-i ./DB/GENOME_Comparison/Aspiorhynchus_laticeps/AL.cds.fa",
-  "--output './Outputs/Eggnog/Eggnog'",
+  paste("-i", shQuote(FOCAL_CDS)),
+  paste("--output", shQuote(output_prefix)),
   "-m diamond",
-  "--cpu 64",
-  "--annotate_hits_table './Outputs/Eggnog/Eggnog.emapper.annotations'"
+  "--cpu 12",
+  "--override"  # Allow overwriting previous incomplete runs
 )
 
-system(annotation_command)
+cat("\n=== Command to Execute ===\n")
+cat(annotation_command, "\n\n")
+
+# =============================================================================
+# Execute with proper error capture
+# =============================================================================
+# Check prerequisites before running
+if (!file.exists(FOCAL_CDS)) {
+  stop("ERROR: Input CDS file does not exist: ", FOCAL_CDS)
+}
+
+if (!dir.exists(EGGNOG_DB)) {
+  stop("ERROR: Eggnog database directory does not exist: ", EGGNOG_DB)
+}
+
+# Create output directory if needed
+if (!dir.exists(EGGNOG_OUTPUT)) {
+  dir.create(EGGNOG_OUTPUT, recursive = TRUE)
+  cat("Created output directory:", EGGNOG_OUTPUT, "\n")
+}
+
+cat("=== Running eggnog-mapper ===\n")
+cat("This may take 10-60 minutes depending on input size...\n\n")
+
+# Use system2() to capture both stdout and stderr
+result <- system2(
+  "bash",
+  args = c("-c", shQuote(annotation_command)),
+  stdout = TRUE,
+  stderr = TRUE
+)
+
+# Display output
+cat("=== Command Output ===\n")
+cat(result, sep = "\n")
+
+# Check exit status
+exit_status <- attr(result, "status")
+if (!is.null(exit_status) && exit_status != 0) {
+  cat("\n=== ERROR: Command failed with exit status", exit_status, "===\n")
+} else {
+  cat("\n=== Annotation completed successfully ===\n")
+
+  # Verify output files were created
+  expected_output <- paste0(output_prefix, ".emapper.annotations")
+  if (file.exists(expected_output)) {
+    output_info <- file.info(expected_output)
+    cat("Output file:", expected_output, "\n")
+    cat("Size:", format(output_info$size, big.mark=","), "bytes\n")
+  } else {
+    cat("WARNING: Expected output file not found:", expected_output, "\n")
+  }
+}
 ```
 
 ## R Environment Setup
@@ -112,20 +233,20 @@ library(R6)
 
 ```{r}
 # Function to read and preprocess eggnog-mapper annotation results
-read_and_process_eggnog <- function(file_path = "./Outputs/Eggnog/eggnog.anno") {
-  """
-  Read and preprocess eggnog-mapper annotation file.
-  
-  Parameters:
-  -----------
-  file_path : str
-      Path to the eggnog annotation file
-      
-  Returns:
-  --------
-  data.frame : Processed annotation data with empty strings converted to NA
-  """
-  
+read_and_process_eggnog <- function(file_path = NULL) {
+  # Read and preprocess eggnog-mapper annotation file.
+  #
+  # Parameters:
+  #   file_path: Path to the eggnog annotation file (uses config default if NULL)
+  #
+  # Returns:
+  #   data.frame: Processed annotation data with empty strings converted to NA
+
+  # Use config default if not provided
+  if (is.null(file_path)) {
+    file_path <- get_path("eggnog.annotations")
+  }
+
   # Read tab-separated annotation file
   egg <- read.csv(file_path, header = TRUE, sep = "\t")
   
@@ -142,20 +263,22 @@ read_and_process_eggnog <- function(file_path = "./Outputs/Eggnog/eggnog.anno") 
 
 # Prepare annotation file by removing comment lines and formatting
 prepare_annotation_file <- function() {
-  """
-  Prepare eggnog annotation file by removing header comments and formatting.
-  """
-  
+  # Prepare eggnog annotation file by removing header comments and formatting.
+  # Uses paths from centralized config.
+
   cat("Preparing annotation file...\n")
-  system("cp ./Outputs/Eggnog/Eggnog.emapper.annotations ./Outputs/Eggnog/eggnog.anno")
-  system("sed -i '/^##/d' ./Outputs/Eggnog/eggnog.anno")  # Remove comment lines
-  system("sed -i 's/#//g' ./Outputs/Eggnog/eggnog.anno")  # Remove remaining # symbols
+  raw_anno <- paste0(EGGNOG_OUTPUT, "/Eggnog.emapper.annotations")
+  clean_anno <- get_path("eggnog.annotations")
+
+  system(paste("cp", shQuote(raw_anno), shQuote(clean_anno)))
+  system(paste("sed -i '/^##/d'", shQuote(clean_anno)))  # Remove comment lines
+  system(paste("sed -i 's/#//g'", shQuote(clean_anno)))  # Remove remaining # symbols
   cat("Annotation file prepared successfully.\n")
 }
 
 # Execute file preparation and read annotations
 prepare_annotation_file()
-egg <- read_and_process_eggnog("./Outputs/Eggnog/eggnog.anno")
+egg <- read_and_process_eggnog(get_path("eggnog.annotations"))
 ```
 
 ## GO Annotation Processing
@@ -164,21 +287,15 @@ egg <- read_and_process_eggnog("./Outputs/Eggnog/eggnog.anno")
 
 ```{r}
 create_gene2go <- function(egg, output_file) {
-  """
-  Extract GO annotations from eggnog results and create gene-to-GO mapping.
-  
-  Parameters:
-  -----------
-  egg : data.frame
-      eggnog annotation results
-  output_file : str
-      Path to save gene2go mapping file
-      
-  Returns:
-  --------
-  list : Contains gene_info and gene2go data frames
-  """
-  
+  # Extract GO annotations from eggnog results and create gene-to-GO mapping.
+  #
+  # Parameters:
+  #   egg: eggnog annotation results (data.frame)
+  #   output_file: Path to save gene2go mapping file
+  #
+  # Returns:
+  #   list: Contains gene_info and gene2go data frames
+
   cat("Processing GO annotations...\n")
   
   # Extract gene information (GID to gene name mapping)
@@ -220,7 +337,7 @@ create_gene2go <- function(egg, output_file) {
 }
 
 # Process GO annotations
-results <- create_gene2go(egg, "./Outputs/Eggnog/gene2go.txt")
+results <- create_gene2go(egg, get_path("eggnog.gene2go"))
 gene_info <- results$gene_info
 gene2go <- results$gene2go
 ```
@@ -230,26 +347,25 @@ gene2go <- results$gene2go
 ### Generate KEGG Hierarchy Information
 
 ```{r}
-update_kegg <- function(json = "./DB/ko00001.json", file = NULL) {
-  """
-  Process KEGG hierarchy JSON to create pathway and KO mappings.
-  
-  This function parses the KEGG ko00001.json file to extract:
-  - Pathway ID to pathway name mappings
-  - KO (KEGG Orthology) to pathway mappings
-  
-  Parameters:
-  -----------
-  json : str
-      Path to ko00001.json file from KEGG
-  file : str
-      Path to save processed KEGG information
-      
-  References:
-  -----------
-  KEGG BRITE hierarchy: https://www.genome.jp/kegg-bin/get_htext?ko00001
-  """
-  
+update_kegg <- function(json = NULL, file = NULL) {
+  # Process KEGG hierarchy JSON to create pathway and KO mappings.
+  #
+  # This function parses the KEGG ko00001.json file to extract:
+  #   - Pathway ID to pathway name mappings
+  #   - KO (KEGG Orthology) to pathway mappings
+  #
+  # Parameters:
+  #   json: Path to ko00001.json file from KEGG (uses KEGG_JSON from config if NULL)
+  #   file: Path to save processed KEGG information
+  #
+  # References:
+  #   KEGG BRITE hierarchy: https://www.genome.jp/kegg-bin/get_htext?ko00001
+
+  # Use config default if not provided
+  if (is.null(json)) {
+    json <- KEGG_JSON
+  }
+
   cat("Processing KEGG hierarchy information...\n")
   
   # Initialize data structures
@@ -303,169 +419,213 @@ update_kegg <- function(json = "./DB/ko00001.json", file = NULL) {
   return(list(pathway2name = pathway2name, ko2pathway = ko2pathway))
 }
 
-# Generate KEGG information if not already present
-if (!file.exists('./Outputs/Eggnog/kegg_info.RData')) {
+# Generate KEGG information
+# Set FORCE_REGENERATE to TRUE to overwrite existing files
+FORCE_REGENERATE <- TRUE
+
+kegg_info_output <- get_path("eggnog.kegg_info")
+if (FORCE_REGENERATE || !file.exists(kegg_info_output)) {
   cat("Generating KEGG hierarchy information...\n")
-  update_kegg(json = "./DB/ko00001.json", file = "./Outputs/Eggnog/kegg_info.RData")
+  update_kegg(json = KEGG_JSON, file = kegg_info_output)
+  cat("KEGG hierarchy information saved to:", kegg_info_output, "\n")
 } else {
-  cat("KEGG hierarchy information already exists.\n")
+  cat("KEGG hierarchy information already exists. Set FORCE_REGENERATE <- TRUE to overwrite.\n")
 }
 ```
 
 ### Extract KEGG Annotations from eggnog Results
 
 ```{r}
-process_egg_for_koterms <- function(egg, kegg_info_path = './Outputs/Eggnog/kegg_info.RData') {
-  """
-  Extract KEGG Orthology (KO) terms from eggnog annotation results.
-  
-  Parameters:
-  -----------
-  egg : data.frame
-      eggnog annotation results
-  kegg_info_path : str
-      Path to KEGG hierarchy information file
-      
-  Returns:
-  --------
-  data.frame : Gene-to-KO mappings
-  """
-  
+process_egg_for_koterms <- function(egg, kegg_info_path = NULL) {
+  # Extract KEGG Orthology (KO) terms from eggnog annotation results.
+  #
+  # Parameters:
+  #   egg: eggnog annotation results (data.frame)
+  #   kegg_info_path: Path to KEGG hierarchy information file (uses config default if NULL)
+  #
+  # Returns:
+  #   data.frame: Gene-to-KO mappings
+
+  # Use config default if not provided
+  if (is.null(kegg_info_path)) {
+    kegg_info_path <- get_path("eggnog.kegg_info")
+  }
+
   cat("Processing KEGG annotations...\n")
-  
+
   # Extract gene KEGG annotations
   koterms <- egg %>%
     dplyr::select(GID = query, KO = KEGG_ko) %>%
     na.omit() %>%
     filter(str_detect(KO, "ko"))
-  
+
   cat("Found", nrow(koterms), "genes with KEGG annotations\n")
-  
+
   # Display sample data
   cat("\nSample KO terms:\n")
   print(head(koterms))
-  
+
   # Ensure KEGG information file exists
   if (!file.exists(kegg_info_path)) {
     cat("KEGG information file not found. Generating...\n")
-    update_kegg(json = "./DB/ko00001.json", file = kegg_info_path)
+    update_kegg(json = KEGG_JSON, file = kegg_info_path)
   }
-  
+
   return(koterms)
 }
 
 # Process KEGG annotations
-koterms <- process_egg_for_koterms(egg, './Outputs/Eggnog/kegg_info.RData')
+koterms <- process_egg_for_koterms(egg, get_path("eggnog.kegg_info"))
 ```
 
 ### Create Gene-to-Pathway Mappings
 
 ```{r}
-processKEGGData <- function(koterms, kegg_info_path = "./Outputs/Eggnog/kegg_info.RData", 
-                           pathway2name_path = "./Outputs/Eggnog/pathway2name.txt", 
-                           gene2pathway_name_path = "./Outputs/Eggnog/gene2pathway_name.txt") {
-  """
-  Process KEGG data to create comprehensive gene-to-pathway mappings.
-  
-  Parameters:
-  -----------
-  koterms : data.frame
-      Gene-to-KO mappings from eggnog
-  kegg_info_path : str
-      Path to processed KEGG hierarchy data
-  pathway2name_path : str
-      Output path for pathway name mappings
-  gene2pathway_name_path : str
-      Output path for gene-pathway-name mappings
-      
-  Returns:
-  --------
-  data.frame : Gene-to-pathway mappings
-  """
-  
+processKEGGData <- function(koterms, kegg_info_path = NULL,
+                           pathway2name_path = NULL,
+                           gene2pathway_name_path = NULL) {
+  # Process KEGG data to create comprehensive gene-to-pathway mappings.
+  #
+  # Parameters:
+  #   koterms: Gene-to-KO mappings from eggnog (data.frame)
+  #   kegg_info_path: Path to processed KEGG hierarchy data (uses config default if NULL)
+  #   pathway2name_path: Output path for pathway name mappings (uses config default if NULL)
+  #   gene2pathway_name_path: Output path for gene-pathway-name mappings (uses config default if NULL)
+  #
+  # Returns:
+  #   data.frame: Gene-to-pathway mappings
+
+  # Use config defaults if not provided
+  if (is.null(kegg_info_path)) {
+    kegg_info_path <- get_path("eggnog.kegg_info")
+  }
+  if (is.null(pathway2name_path)) {
+    pathway2name_path <- paste0(EGGNOG_OUTPUT, "/pathway2name.txt")
+  }
+  if (is.null(gene2pathway_name_path)) {
+    gene2pathway_name_path <- get_path("eggnog.gene2pathway")
+  }
+
   cat("Processing KEGG pathway mappings...\n")
-  
+
   # Load KEGG hierarchy information
   load(kegg_info_path)
-  
+
   cat("Loaded KEGG data:\n")
   cat("- Pathways:", nrow(pathway2name), "\n")
   cat("- KO-pathway mappings:", nrow(ko2pathway), "\n")
-  
+
   # Save pathway names for reference
   write.table(pathway2name, file = pathway2name_path, sep = "\t", row.names = FALSE, quote = FALSE)
-  
+
   # Standardize column names for joining
   colnames(ko2pathway) <- c("KO", "Pathway")
-  
+
   # Remove "ko:" prefix from KO terms to match ko2pathway format
   koterms$KO <- str_replace_all(koterms$KO, "ko:", "")
-  
+
   # Create gene-to-pathway mappings by joining with KO-pathway data
-  gene2pathway <- koterms %>% 
+  gene2pathway <- koterms %>%
     left_join(ko2pathway, by = "KO") %>%
-    dplyr::select(GID, Pathway) %>% 
+    dplyr::select(GID, Pathway) %>%
     na.omit()
-  
+
   cat("Created", nrow(gene2pathway), "gene-to-pathway mappings\n")
-  
+
   # Add pathway names for comprehensive mapping
   gene2pathway_name <- left_join(gene2pathway, pathway2name, by = "Pathway")
-  
+
   # Save comprehensive mapping
   write.table(gene2pathway_name, file = gene2pathway_name_path, sep = "\t", row.names = FALSE, quote = FALSE)
-  
+
   cat("Files saved:\n")
   cat("- Pathway names:", pathway2name_path, "\n")
   cat("- Gene-pathway-names:", gene2pathway_name_path, "\n")
-  
+
   # Display sample data
   cat("\nSample gene2pathway data:\n")
   print(head(gene2pathway))
   cat("\nSample gene2pathway_name data:\n")
   print(head(gene2pathway_name))
-  
+
   return(gene2pathway)
 }
 
-# Create comprehensive KEGG mappings
-gene2pathway <- processKEGGData(
-  koterms, 
-  "./Outputs/Eggnog/kegg_info.RData", 
-  "./Outputs/Eggnog/pathway2name.txt", 
-  "./Outputs/Eggnog/gene2pathway_name.txt"
-)
+# Create comprehensive KEGG mappings (uses config paths by default)
+gene2pathway <- processKEGGData(koterms)
 ```
 
 ## Custom Organism Database Creation
 
 ### Build OrgDb Package
 
+> Using a lot of RAM and time, so this step must run on a HPC node with sufficient resources. Here is the script: `06_Fish_ComparativeGenomics4AL_Publication/Jobs/submit_create_orgdb.sh`
+
 ```{r}
-# Create custom organism database package for Aspiorhynchus laticeps
+# Create custom organism database package for the focal species
 # This enables species-specific enrichment analysis using clusterProfiler
 
-cat("Creating custom OrgDb package...\n")
+# Set to TRUE to regenerate even if package exists
+FORCE_REGENERATE_ORGDB <- TRUE
 
-# Build organism package with all annotation data
-# Tax ID 450224 corresponds to Aspiorhynchus laticeps in NCBI Taxonomy
-# Reference: https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi
-makeOrgPackage(
-  gene_info = gene_info,      # Gene ID to gene name mappings
-  go = gene2go,              # Gene-to-GO term mappings  
-  ko = koterms,              # Gene-to-KO mappings
-  pathway = gene2pathway,     # Gene-to-pathway mappings
-  version = "0.0.2",
-  maintainer = 'HUANGYuxiang <huang-yuxiang951@g.ecc.u-tokyo.ac.jp>',
-  author = 'HUANGYuxiang <huang-yuxiang951@g.ecc.u-tokyo.ac.jp>',
-  outputDir = "./DB",
-  tax_id = "450224",         # NCBI Taxonomy ID for Aspiorhynchus laticeps
-  genus = "Aspiorhynchus",
-  species = "laticeps",
-  goTable = "go"
+org_pkg_dir <- get_path("database.org_db")
+org_sqlite_file <- file.path(
+  get_path("base.database"),
+  sub("\\.eg\\.db$", ".eg.sqlite", basename(get_path("database.org_db")))
 )
 
-cat("Custom OrgDb package created successfully in ./DB/\n")
+# Check if we need to create the package
+if (FORCE_REGENERATE_ORGDB || !dir.exists(org_pkg_dir)) {
+
+  cat("=== Creating custom OrgDb package ===\n\n")
+
+  # Clean up any existing partial files to avoid conflicts
+  if (file.exists(org_sqlite_file)) {
+    cat("Removing stale SQLite file:", org_sqlite_file, "\n")
+    file.remove(org_sqlite_file)
+  }
+
+  if (dir.exists(org_pkg_dir)) {
+    cat("Removing existing package directory:", org_pkg_dir, "\n")
+    unlink(org_pkg_dir, recursive = TRUE)
+  }
+
+  cat("\nBuilding organism package with annotation data...\n")
+  cat("  - Genes:", nrow(gene_info), "\n")
+  cat("  - GO mappings:", nrow(gene2go), "\n")
+  cat("  - KO mappings:", nrow(koterms), "\n")
+  cat("  - Pathway mappings:", nrow(gene2pathway), "\n\n")
+
+  # Build organism package with all annotation data
+  # Tax ID from config corresponds to focal species in NCBI Taxonomy
+  # Reference: https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi
+  makeOrgPackage(
+    gene_info = gene_info,      # Gene ID to gene name mappings
+    go = gene2go,              # Gene-to-GO term mappings
+    ko = koterms,              # Gene-to-KO mappings
+    pathway = gene2pathway,     # Gene-to-pathway mappings
+    version = "0.0.4",
+    maintainer = 'HUANGYuxiang <huang-yuxiang951@g.ecc.u-tokyo.ac.jp>',
+    author = 'HUANGYuxiang <huang-yuxiang951@g.ecc.u-tokyo.ac.jp>',
+    outputDir = "./DB",
+    tax_id = get_focal_tax_id(),
+    genus = get_focal_genus(),
+    species = get_focal_species_epithet(),
+    goTable = "go"
+  )
+
+  # Clean up the intermediate sqlite file (it's now inside the package)
+  if (file.exists(org_sqlite_file)) {
+    file.remove(org_sqlite_file)
+  }
+
+  cat(sprintf("\n=== Custom OrgDb package created successfully ===\n"))
+  cat(sprintf("Location: %s\n", org_pkg_dir))
+
+} else {
+  cat("OrgDb package already exists at:", org_pkg_dir, "\n")
+  cat("Set FORCE_REGENERATE_ORGDB <- TRUE to rebuild.\n")
+}
 ```
 
 ## Database Installation and Testing
@@ -476,15 +636,16 @@ cat("Custom OrgDb package created successfully in ./DB/\n")
 # Install custom organism database with execution control
 # Uses flag file to prevent repeated installation
 
-flag_file <- "./Outputs/Eggnog/executed.flag"
+flag_file <- get_path("eggnog.executed_flag")
 
 # Execute command only if flag file does not exist
 if (!file.exists(flag_file)) {
   cat("Installing custom organism database...\n")
-  
+  cat(sprintf("  Source: %s\n", ORG_DB_PATH))
+
   # Install custom library from local source
-  install.packages("./DB/org.Alaticeps.eg.db", repos = NULL, type = "sources")
-  
+  install.packages(ORG_DB_PATH, repos = NULL, type = "sources")
+
   # Create flag file after execution to prevent re-installation
   file.create(flag_file)
   cat("Custom database installed successfully.\n")
@@ -493,14 +654,16 @@ if (!file.exists(flag_file)) {
 }
 
 # Load custom library
-library(org.Alaticeps.eg.db)
+orgdb_name <- get_orgdb_package_name()
+library(orgdb_name, character.only = TRUE)
+orgdb_obj <- get(orgdb_name)
 
 # Display available key types
 cat("Available key types in custom database:\n")
-print(keytypes(org.Alaticeps.eg.db))
+print(keytypes(orgdb_obj))
 
 # Set database reference
-GO_database <- 'org.Alaticeps.eg.db'
+GO_database <- orgdb_name
 ```
 
 ## Validation and Testing
@@ -509,10 +672,10 @@ GO_database <- 'org.Alaticeps.eg.db'
 
 ```{r}
 # Load OrthoFinder results for testing enrichment analysis
-# Reference: OrthoGroups Info at DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/Orthogroups/Orthogroups.tsv
+# Reference: OrthoGroups Info from centralized config (paths.yaml)
 
 cat("Loading OrthoFinder results for validation...\n")
-orthogroups_df <- read.delim("./DB/GENOME_Comparison/FAA/OrthoFinder/Results_Feb03/Orthogroups/Orthogroups.tsv", header = TRUE)
+orthogroups_df <- read.delim(get_path("orthofinder.orthogroups_tsv"), header = TRUE)
 
 cat("OrthoFinder data loaded:", nrow(orthogroups_df), "orthogroups\n")
 ```
@@ -522,21 +685,15 @@ cat("OrthoFinder data loaded:", nrow(orthogroups_df), "orthogroups\n")
 ```{r}
 # Example: Extract genes from a specific orthogroup for enrichment testing
 extract_orthogroup_genes <- function(orthogroups_df, target_og = "OG0000000") {
-  """
-  Extract all gene IDs from a specific orthogroup across all species.
-  
-  Parameters:
-  -----------
-  orthogroups_df : data.frame
-      OrthoFinder orthogroups data
-  target_og : str
-      Target orthogroup ID
-      
-  Returns:
-  --------
-  vector : Gene IDs from the specified orthogroup
-  """
-  
+  # Extract all gene IDs from a specific orthogroup across all species.
+  #
+  # Parameters:
+  #   orthogroups_df: OrthoFinder orthogroups data (data.frame)
+  #   target_og: Target orthogroup ID (default: "OG0000000")
+  #
+  # Returns:
+  #   vector: Gene IDs from the specified orthogroup
+
   cat("Extracting genes from orthogroup:", target_og, "\n")
   
   # Select the target orthogroup row
@@ -585,7 +742,7 @@ if (length(genes_of_interest) > 0) {
   # GO enrichment analysis with relaxed parameters for testing
   ego_result <- enrichGO(
     gene          = unique(genes_of_interest),
-    OrgDb         = org.Alaticeps.eg.db,
+    OrgDb         = orgdb_obj,
     keyType       = "GID",           # Gene ID type in custom database
     ont           = "BP",            # Biological Process ontology
     pAdjustMethod = "BH",           # Benjamini-Hochberg correction
@@ -604,18 +761,18 @@ if (length(genes_of_interest) > 0) {
     # Bar plot of top enriched terms
     p1 <- barplot(ego_result, showCategory = 20, title = "GO Enrichment - Bar Plot")
     print(p1)
-    ggsave("./Outputs/GO_Enrichment/GO_enrichment_test_barplot.png", plot = p1, width = 12, height = 8, dpi = 300)
-    ggsave("./Outputs/GO_Enrichment/GO_enrichment_test_barplot.pdf", plot = p1, width = 12, height = 8)
+    ggsave(paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_barplot.png"), plot = p1, width = 12, height = 8, dpi = 300)
+    ggsave(paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_barplot.pdf"), plot = p1, width = 12, height = 8)
     
     # Dot plot of enriched terms
     p2 <- dotplot(ego_result, showCategory = 20, title = "GO Enrichment - Dot Plot")
     print(p2)
-    ggsave("./Outputs/GO_Enrichment/GO_enrichment_test_dotplot.png", plot = p2, width = 12, height = 8, dpi = 300)
-    ggsave("./Outputs/GO_Enrichment/GO_enrichment_test_dotplot.pdf", plot = p2, width = 12, height = 8)
+    ggsave(paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_dotplot.png"), plot = p2, width = 12, height = 8, dpi = 300)
+    ggsave(paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_dotplot.pdf"), plot = p2, width = 12, height = 8)
     
     # Save results to file
     write.csv(as.data.frame(ego_result), 
-             "./Outputs/GO_Enrichment/GO_enrichment_test_results.csv", 
+             paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_results.csv"), 
              row.names = FALSE)
     
     cat("Test enrichment results saved to: ./Outputs/GO_Enrichment/GO_enrichment_test_results.csv\n")
@@ -654,25 +811,71 @@ cat("   - Total pathway assignments:", nrow(gene2pathway), "\n")
 cat("   - Unique pathways:", length(unique(gene2pathway$Pathway)), "\n\n")
 
 cat("4. Database Verification:\n")
-cat("   - Custom OrgDb package: org.Alaticeps.eg.db\n")
-cat("   - Available key types:", paste(keytypes(org.Alaticeps.eg.db), collapse = ", "), "\n")
+cat("   - Custom OrgDb package:", get_orgdb_package_name(), "\n")
+cat("   - Available key types:", paste(keytypes(orgdb_obj), collapse = ", "), "\n")
 cat("   - Database ready for enrichment analysis: TRUE\n")
 ```
+
+### Out[1]: ✓ Done 0.49s
+```
+=== Database Quality Control Report ===
+
+
+1. Annotation Coverage:
+
+   - Total genes with annotations: 92683 
+
+   - Genes with GO annotations: 43245 
+
+   - Genes with KEGG annotations: 45567 
+
+   - Genes with pathway annotations: 30789 
+
+
+2. GO Annotation Statistics:
+
+   - Total GO terms assigned: 6202355 
+
+   - Unique GO terms: 23339 
+
+   - Average GO terms per gene: 143.42 
+
+
+3. KEGG Annotation Statistics:
+
+   - Total KO assignments: 45567 
+
+   - Unique KO terms: 8867 
+
+   - Total pathway assignments: 124669 
+
+   - Unique pathways: 456 
+
+
+4. Database Verification:
+
+   - Custom OrgDb package: org.Dmaculatus.eg.db
+
+   - Available key types: EVIDENCE, EVIDENCEALL, GENENAME, GID, GO, GOALL, KO, ONTOLOGY, ONTOLOGYALL, Pathway 
+
+   - Database ready for enrichment analysis: TRUE
+```
+
 
 ## Output Files Summary
 
 The following files have been generated for downstream enrichment analysis:
 
 ```{r}
-# List all generated output files
+# List all generated output files (using config paths)
 output_files <- c(
-  "./Outputs/Eggnog/eggnog.anno",
-  "./Outputs/Eggnog/gene2go.txt",
-  "./Outputs/Eggnog/kegg_info.RData",
-  "./Outputs/Eggnog/pathway2name.txt",
-  "./Outputs/Eggnog/gene2pathway_name.txt",
-  "./DB/org.Alaticeps.eg.db",
-  "./Outputs/GO_Enrichment/GO_enrichment_test_results.csv"
+  get_path("eggnog.annotations"),
+  get_path("eggnog.gene2go"),
+  get_path("eggnog.kegg_info"),
+  paste0(EGGNOG_OUTPUT, "/pathway2name.txt"),
+  get_path("eggnog.gene2pathway"),
+  ORG_DB_PATH,
+  paste0(GO_ENRICHMENT_DIR, "/GO_enrichment_test_results.csv")
 )
 
 cat("Generated output files:\n")
@@ -685,11 +888,37 @@ for (file in output_files) {
 }
 ```
 
+### Out[1]: ✓ Done 0.0s
+```
+Generated output files:
+
+✓ /home/jovyan/Outputs/Eggnog/eggnog.anno 
+✓ /home/jovyan/Outputs/Eggnog/gene2go.txt 
+✓ /home/jovyan/Outputs/Eggnog/kegg_info.RData 
+✓ /home/jovyan/Outputs/Eggnog/pathway2name.txt 
+✓ /home/jovyan/Outputs/Eggnog/gene2pathway_name.txt 
+✓ /home/jovyan/DB/org.Dmaculatus.eg.db 
+✗ ./Outputs/GO_Enrichment/GO_enrichment_test_results.csv (not found)
+
+```
+
+Generated output files:
+
+✓ /home/jovyan/Outputs/Eggnog/eggnog.anno 
+✓ /home/jovyan/Outputs/Eggnog/gene2go.txt 
+✓ /home/jovyan/Outputs/Eggnog/kegg_info.RData 
+✓ /home/jovyan/Outputs/Eggnog/pathway2name.txt 
+✓ /home/jovyan/Outputs/Eggnog/gene2pathway_name.txt 
+✓ /home/jovyan/DB/org.Dmaculatus.eg.db 
+✗ ./Outputs/GO_Enrichment/GO_enrichment_test_results.csv (not found)
+
+```
+
 ## Next Steps
 
 After completing the annotation and database setup:
 
-1. **Use the custom database** (`org.Alaticeps.eg.db`) for species-specific enrichment analysis
+1. **Use the custom database** (`org.Dmaculatus.eg.db`) for species-specific enrichment analysis
 2. **Apply enrichment analysis** to OrthoFinder results using the prepared annotations
 3. **Perform comparative analysis** across different orthogroups and species
 4. **Validate results** using the generated pathway and GO mappings

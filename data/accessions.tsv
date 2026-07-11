@@ -1,0 +1,26 @@
+# NCBI genome assembly accessions for the 12 species in the comparative set.
+# Used by scripts/download_genomes.sh to fetch the raw assemblies that BRAKER3
+# re-annotates (see Notebooks/0-ultimate-preprocessing.qmd and DATA.md).
+#
+# Columns: species <TAB> accession <TAB> common_name <TAB> role
+#   role = focal_set2 (A. laticeps focal) / focal_set3 (D. maculatus focal) / comparison
+#
+# NOTE: three accessions below are marked NEEDS_TABLE_S1 — their source assemblies
+# are not recorded anywhere in the analysis workspace and must be filled in from the
+# manuscript's Table S1 before release. Diptychus_maculatus is marked NEEDS_CONFIRM
+# because the manuscript Data Availability cites GCA_041504395.2 while the workspace
+# download record shows GCA_041504395.1 (same assembly, different version).
+#
+species	accession	common_name	role
+Aspiorhynchus_laticeps	GCA_023376895.1	big-head_schizothoracin	focal_set2
+Diptychus_maculatus	GCA_041504395.2	scaly_osman	focal_set3
+Carassius_auratus	GCA_003368295.1	goldfish	comparison
+Cyprinus_carpio	GCF_018340385.1	common_carp	comparison
+Danio_rerio	GCF_000002035.6	zebrafish	comparison
+Gymnocypris_eckloni	GCA_027564155.1	naked_carp	comparison
+Oxygymnocypris_stewartii	GCA_003573665.1	Tibetan_naked_carp	comparison
+Schizopygopsis_younghusbandi	NEEDS_TABLE_S1	-	comparison
+Sinocyclocheilus_grahami	GCA_001515645.1	golden-line_fish	comparison
+Triplophysa_pappenheimi	NEEDS_TABLE_S1	-	comparison
+Triplophysa_tibetana	GCA_008369825.1	-	comparison
+Triplophysa_yaopeizhii	NEEDS_TABLE_S1	-	comparison

@@ -1,0 +1,194 @@
+# Path Configuration for Comparative Genomics Analysis — Set 3
+# =============================================================================
+# Separate config for the set3 species group (12 species, Mar03 OrthoFinder run).
+# Focal species: Diptychus_maculatus (instead of Aspiorhynchus_laticeps in set2).
+# All analysis outputs go to Outputs_set3/ to avoid conflicts with set1 and set2.
+#
+# Template syntax: ${section.key} references other paths in this file.
+# =============================================================================
+
+# OrthoFinder results version for set3
+version: "Mar03"
+
+# =============================================================================
+# Base Paths
+# =============================================================================
+base:
+  project_root: "/home/jovyan"
+  outputs: "${base.project_root}/Outputs"
+  outputs_set3: "${base.project_root}/Outputs_set3"
+  notebooks: "${base.project_root}/Notebooks"
+  database: "${base.project_root}/DB"
+
+# =============================================================================
+# OrthoFinder Paths
+# =============================================================================
+# Results_Mar03 lives under the original Outputs/OrthoFinder/ directory.
+orthofinder:
+  results_dir: "${base.outputs}/OrthoFinder/Results_${version}"
+  # Orthogroups
+  orthogroups_tsv: "${orthofinder.results_dir}/Orthogroups/Orthogroups.tsv"
+  orthogroups_count: "${orthofinder.results_dir}/Orthogroups/Orthogroups.GeneCount.tsv"
+  orthogroups_unassigned: "${orthofinder.results_dir}/Orthogroups/Orthogroups_UnassignedGenes.tsv"
+  # Species tree
+  species_tree: "${orthofinder.results_dir}/Species_Tree/SpeciesTree_rooted.txt"
+  species_tree_node_labels: "${orthofinder.results_dir}/Species_Tree/SpeciesTree_rooted_node_labels.txt"
+  # Sequence data
+  msa_dir: "${orthofinder.results_dir}/MultipleSequenceAlignments"
+  orthogroup_sequences: "${orthofinder.results_dir}/Orthogroup_Sequences"
+  single_copy_orthologue_sequences: "${orthofinder.results_dir}/Single_Copy_Orthologue_Sequences"
+  # Gene trees
+  gene_trees: "${orthofinder.results_dir}/Gene_Trees"
+  resolved_gene_trees: "${orthofinder.results_dir}/Resolved_Gene_Trees"
+  # Duplication events
+  gene_duplications: "${orthofinder.results_dir}/Gene_Duplication_Events"
+  duplications_file: "${orthofinder.gene_duplications}/SpeciesTree_Gene_Duplications_0.5_Support.txt"
+  # Comparative genomics statistics
+  comparative_stats: "${orthofinder.results_dir}/Comparative_Genomics_Statistics"
+  statistics_overall: "${orthofinder.comparative_stats}/Statistics_Overall.tsv"
+  statistics_per_species: "${orthofinder.comparative_stats}/Statistics_PerSpecies.tsv"
+  # Orthologues
+  orthologues_dir: "${orthofinder.results_dir}/Orthologues"
+
+# =============================================================================
+# CAFE Analysis Paths
+# =============================================================================
+cafe:
+  base_dir: "${base.outputs_set3}/CAFE"
+  # Input files
+  input_tree: "${cafe.base_dir}/input_tree.tre"
+  ultrametric_tree: "${cafe.base_dir}/species_tree_ultrametric.tre"
+  gene_counts: "${cafe.base_dir}/gene_counts_cafe.tsv"
+  gene_counts_filtered: "${cafe.base_dir}/gene_counts_cafe_filtered.tsv"
+  # Results directories
+  results_dir: "${cafe.base_dir}/cafe_results"
+  single_lambda:
+    dir: "${cafe.results_dir}/single_lambda"
+    family_results: "${cafe.single_lambda.dir}/Base_family_results.txt"
+    change_tab: "${cafe.single_lambda.dir}/Base_change.tab"
+    model: "${cafe.single_lambda.dir}/Base_model.txt"
+  with_error_model:
+    dir: "${cafe.results_dir}/with_error_model"
+  multi_lambda:
+    dir: "${cafe.results_dir}/multi_lambda"
+  # Species-specific analysis
+  diptychus_analysis: "${cafe.base_dir}/Diptychus_maculatus_analysis"
+  expanded_families: "${cafe.diptychus_analysis}/expanded_families.tsv"
+  contracted_families: "${cafe.diptychus_analysis}/contracted_families.tsv"
+  # Summary
+  analysis_summary: "${cafe.base_dir}/analysis_summary.json"
+
+# =============================================================================
+# Database Paths
+# =============================================================================
+database:
+  # Genome comparison data
+  genome_comparison: "${base.database}/GENOME_Comparison"
+  faa_dir: "${database.genome_comparison}/FAA-set2"
+  # Annotation databases
+  eggnog: "${base.database}/Eggnog"
+  kegg_json: "${base.database}/ko00001.json"
+  org_db: "${base.database}/org.Dmaculatus.eg.db"
+  # BLAST databases
+  blast_db: "${base.database}/BlastDB"
+  # MCScanX
+  mcscanx_db: "${base.database}/MCScanX"
+
+# =============================================================================
+# CDS Paths from BRAKER3 Outputs
+# =============================================================================
+cds:
+  unmasked_dir: "${base.outputs}/Preprocessing/BRAKER_UNMASKED"
+  masked_dir: "${base.outputs}/Preprocessing/BRAKER_MASKED"
+  Aspiorhynchus_laticeps: "${cds.masked_dir}/Aspiorhynchus_laticeps/braker.codingseq"
+  Carassius_auratus: "${cds.masked_dir}/Carassius_auratus/braker.codingseq"
+  Cyprinus_carpio: "${cds.masked_dir}/Cyprinus_carpio/braker.codingseq"
+  Danio_rerio: "${cds.masked_dir}/Danio_rerio/braker.codingseq"
+  Diptychus_maculatus: "${cds.masked_dir}/Diptychus_maculatus/braker.codingseq"
+  Gymnocypris_eckloni: "${cds.masked_dir}/Gymnocypris_eckloni/braker.codingseq"
+  Oxygymnocypris_stewartii: "${cds.masked_dir}/Oxygymnocypris_stewartii/braker.codingseq"
+  Schizopygopsis_younghusbandi: "${cds.masked_dir}/Schizopygopsis_younghusbandi/braker.codingseq"
+  Sinocyclocheilus_grahami: "${cds.masked_dir}/Sinocyclocheilus_grahami/braker.codingseq"
+  Triplophysa_pappenheimi: "${cds.masked_dir}/Triplophysa_pappenheimi/braker.codingseq"
+  Triplophysa_tibetana: "${cds.masked_dir}/Triplophysa_tibetana/braker.codingseq"
+  Triplophysa_yaopeizhii: "${cds.masked_dir}/Triplophysa_yaopeizhii/braker.codingseq"
+
+# =============================================================================
+# Eggnog Annotation Outputs
+# =============================================================================
+eggnog:
+  output_dir: "${base.outputs_set3}/Eggnog"
+  annotations: "${eggnog.output_dir}/eggnog.anno"
+  gene2go: "${eggnog.output_dir}/gene2go.txt"
+  gene2pathway: "${eggnog.output_dir}/gene2pathway_name.txt"
+  kegg_info: "${eggnog.output_dir}/kegg_info.RData"
+  executed_flag: "${eggnog.output_dir}/executed.flag"
+
+# =============================================================================
+# Output Directories
+# =============================================================================
+# All analysis outputs under Outputs_set3/ to separate from set1 and set2.
+outputs:
+  # KaKs analysis
+  kaks:
+    base_dir: "${base.outputs_set3}/KaKs"
+    codon_alignments: "${outputs.kaks.base_dir}/codon_alignments"
+    yn00_results: "${outputs.kaks.base_dir}/yn00_results"
+    codeml_results: "${outputs.kaks.base_dir}/codeml_results"
+    integration: "${outputs.kaks.base_dir}/integration"
+    figures: "${outputs.kaks.base_dir}/figures"
+  # Enrichment analysis
+  go_enrichment: "${base.outputs_set3}/GO_Enrichment"
+  ko_enrichment: "${base.outputs_set3}/KO_Enrichment"
+  # BLAST results
+  blastp: "${base.outputs_set3}/Blastp"
+  # Synteny analysis
+  mcscanx_results: "${base.outputs_set3}/MCScanX_Results"
+  # Genome-wide selection screening (no CAFE filter)
+  genomewide_selection:
+    base_dir: "${base.outputs_set3}/GenomewideSelection"
+    codon_alignments: "${outputs.genomewide_selection.base_dir}/codon_alignments"
+    yn00_results: "${outputs.genomewide_selection.base_dir}/yn00_results"
+    yn00_checkpoints: "${outputs.genomewide_selection.base_dir}/yn00_results/checkpoints"
+    codeml_results: "${outputs.genomewide_selection.base_dir}/codeml_results"
+    summary: "${outputs.genomewide_selection.base_dir}/summary"
+    figures: "${outputs.genomewide_selection.base_dir}/figures"
+  # Notebook outputs
+  figures: "${base.notebooks}/Figures_set3"
+  tables: "${base.notebooks}/Tables_set3"
+
+# =============================================================================
+# Species Configuration
+# =============================================================================
+species:
+  # Focal species for analysis
+  focal: "Diptychus_maculatus"
+  tax_id: "2743814"
+  genus: "Diptychus"
+  species_epithet: "maculatus"
+  abbreviation: "Dip"
+  mcscanx_prefix: "dm"
+
+# =============================================================================
+# MCScanX Comparison Pairs
+# =============================================================================
+mcscanx:
+  comparisons:
+    - focal: "Diptychus_maculatus"
+      comparison: "Triplophysa_pappenheimi"
+    - focal: "Diptychus_maculatus"
+      comparison: "Aspiorhynchus_laticeps"
+  # Complete species list (12 species - Mar03 OrthoFinder run, set3)
+  all:
+    - "Aspiorhynchus_laticeps"
+    - "Carassius_auratus"
+    - "Cyprinus_carpio"
+    - "Danio_rerio"
+    - "Diptychus_maculatus"
+    - "Gymnocypris_eckloni"
+    - "Oxygymnocypris_stewartii"
+    - "Schizopygopsis_younghusbandi"
+    - "Sinocyclocheilus_grahami"
+    - "Triplophysa_pappenheimi"
+    - "Triplophysa_tibetana"
+    - "Triplophysa_yaopeizhii"

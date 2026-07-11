@@ -39,6 +39,10 @@ import logging
 # Setup logging for better error tracking
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Load centralized path configuration
+sys.path.insert(0, './Notebooks/config')
+from load_config import load_paths, get_path, get_version, get_species_list, get_focal_species
 ```
 
 ## Core Function: Protein Extraction
@@ -176,7 +180,7 @@ def extract_proteins(fna_file, gff_file, faa_output, genetic_code=11, verbose=Tr
 ## Batch Processing Functions
 
 ```{python}
-def prepare_orthofinder_dataset(genome_info_list, output_base_dir="./DB/GENOME_Comparison/FAA", 
+def prepare_orthofinder_dataset(genome_info_list, output_base_dir=None, 
                                genetic_code=11, processes=4):
     """
     Batch process multiple genomes to prepare FAA files for OrthoFinder.
@@ -196,6 +200,9 @@ def prepare_orthofinder_dataset(genome_info_list, output_base_dir="./DB/GENOME_C
     --------
     dict : Results summary with success/failure counts
     """
+    
+    if output_base_dir is None:
+        output_base_dir = get_path('database.faa_dir')
     
     # Create output directory
     os.makedirs(output_base_dir, exist_ok=True)
@@ -301,9 +308,11 @@ def validate_faa_files(faa_directory, min_proteins=100):
 
 ```{python}
 # Example: Process Triplophysa_bombifrons genome
-fna_file = "./DB/GENOME_Comparison/Triplophysa_bombifrons/ncbi_dataset/data/GCA_029783895.1/GCA_029783895.1_ASM2978389v1_genomic.fna"
-gff_file = "./DB/GENOME_Comparison/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3"
-faa_output = "./DB/GENOME_Comparison/FAA/Triplophysa_bombifrons.faa"
+GENOME_COMP = get_path('database.genome_comparison')
+FAA_DIR = get_path('database.faa_dir')
+fna_file = f"{GENOME_COMP}/Triplophysa_bombifrons/ncbi_dataset/data/GCA_029783895.1/GCA_029783895.1_ASM2978389v1_genomic.fna"
+gff_file = f"{GENOME_COMP}/Triplophysa_bombifrons/Triplophysa_bombifrons-GFF.gff3"
+faa_output = f"{FAA_DIR}/Triplophysa_bombifrons.faa"
 
 # Check if files exist before processing
 if os.path.exists(fna_file) and os.path.exists(gff_file):
@@ -317,16 +326,17 @@ else:
 
 ```{python}
 # Example genome dataset (modify paths as needed)
+GENOME_BASE = get_path('database.genome_comparison')
 genome_info_list = [
-    ("./DB/GENOME_Comparison/Species1/genome.fna", "./DB/GENOME_Comparison/Species1/annotation.gff3", "Species1"),
-    ("./DB/GENOME_Comparison/Species2/genome.fna", "./DB/GENOME_Comparison/Species2/annotation.gff3", "Species2"),
+    (f"{GENOME_BASE}/Species1/genome.fna", f"{GENOME_BASE}/Species1/annotation.gff3", "Species1"),
+    (f"{GENOME_BASE}/Species2/genome.fna", f"{GENOME_BASE}/Species2/annotation.gff3", "Species2"),
     # Add more genomes as needed
 ]
 
 # Process in batch (uncomment to run)
 # summary = prepare_orthofinder_dataset(
 #     genome_info_list, 
-#     output_base_dir="./DB/GENOME_Comparison/FAA",
+#     output_base_dir=get_path('database.faa_dir'),
 #     processes=6
 # )
 ```
@@ -335,7 +345,7 @@ genome_info_list = [
 
 ```{python}
 # Validate the generated FAA files
-validation_results = validate_faa_files("./DB/GENOME_Comparison/FAA", min_proteins=100)
+validation_results = validate_faa_files(get_path('database.faa_dir'), min_proteins=100)
 
 # Display any problematic files
 if validation_results['small_files']:

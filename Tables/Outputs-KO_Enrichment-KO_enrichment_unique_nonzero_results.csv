@@ -1,3 +1,0 @@
-ID	Description	GeneRatio	BgRatio	pvalue	p.adjust	qvalue	geneID	Count
-ko00780	Biotin metabolism	2/57	6/16222	0.000180319227877079	0.000180319227877079	0.00854143710996689	evm.model.ctg3472.13/evm.model.ctg681.3	2
-ko00537	Glycosylphosphatidylinositol (GPI)-anchored proteins	5/57	241/16222	0.00154983932830605	0.00154983932830605	0.0367067209335644	evm.model.ctg3448.121/evm.model.ctg4126.31/evm.model.ctg1343.4/evm.model.ctg3582.4/evm.model.ctg3874.3	5

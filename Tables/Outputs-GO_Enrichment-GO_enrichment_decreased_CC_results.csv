@@ -1,2 +1,0 @@
-"ID","Description","GeneRatio","BgRatio","pvalue","p.adjust","qvalue","geneID","Count"
-"GO:0032281","AMPA glutamate receptor complex","8/255","75/22757",1.96579487809946e-06,0.000691959797091008,0.000643539165356769,"evm.model.ctg1244.51/evm.model.ctg3337.167/evm.model.ctg3544.49/evm.model.ctg3600.142/evm.model.ctg3625.63/evm.model.ctg3625.64/evm.model.ctg3668.18/evm.model.ctg3700.3",8
