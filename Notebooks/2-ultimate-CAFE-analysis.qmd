@@ -23,7 +23,7 @@ CAFE uses a **stochastic birth-death model** to analyze changes in gene family s
 
 ### Analysis Focus
 
-- **Species of interest**: *Diptychus maculatus*
+- **Species of interest**: the focal species set by the active config (Set 2: *Aspiorhynchus laticeps*; Set 3: *Diptychus maculatus*)
 - **Comparative context**: 12 cypriniform fish species
 - **Goal**: Identify gene families with unusual evolutionary dynamics
 
@@ -999,7 +999,7 @@ print(p)
 cat("\nTree figure saved to: ./Notebooks/Figures/cafe_tree_changes_ggtree.png/pdf\n")
 ```
 
-## 6. Diptychus maculatus-Specific Analysis
+## 6. Focal-Species-Specific Analysis
 
 ### 6.1 Extract Species-Specific Changes
 

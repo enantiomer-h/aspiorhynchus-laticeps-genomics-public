@@ -559,7 +559,7 @@ gene2pathway <- processKEGGData(koterms)
 
 ### Build OrgDb Package
 
-> Using a lot of RAM and time, so this step must run on a HPC node with sufficient resources. Here is the script: `06_Fish_ComparativeGenomics4AL_Publication/Jobs/submit_create_orgdb.sh`
+> This step is memory- and time-intensive; run it on a machine (or HPC node) with sufficient resources.
 
 ```{r}
 # Create custom organism database package for the focal species

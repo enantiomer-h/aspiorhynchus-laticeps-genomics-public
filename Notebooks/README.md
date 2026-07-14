@@ -96,7 +96,7 @@ Phase 6: State-of-the-Art Visualization (after Phase 2-5)
 ---
 
 ### `0-ultimate-preprocessing.qmd`
-**Purpose:** Genome annotation pipeline for 13 raw genome assemblies
+**Purpose:** Genome annotation pipeline for the 12 raw genome assemblies
 
 **Pipeline stages:**
 1. **Repeat Masking** - RepeatModeler + RepeatMasker
@@ -388,20 +388,24 @@ species:
 
 ## Species Analyzed
 
-| Species | Common Name | Notes |
-|---------|-------------|-------|
-| *Anabarilius grahami* | Kunming catfish | Highland cyprinid |
-| ***Aspiorhynchus laticeps*** | **Xinjiang big-head fish** | **Focal species** |
-| *Carassius auratus* | Goldfish | Reference genome |
-| *Cyprinus carpio* | Common carp | Reference genome |
-| *Danio rerio* | Zebrafish | Model organism |
-| *Labeo rohita* | Rohu | Reference genome |
-| *Onychostoma macrolepis* | Large-scale shoveljaw fish | |
-| *Schizothorax macropogon* | Schizothoracine | Highland species |
-| *Sinocyclocheilus grahami* | Golden-line fish | Cave-adapted |
-| *Triplophysa bombifrons* | Loach | Highland species |
-| *Triplophysa dalaica* | Dalai loach | Highland species |
-| *Triplophysa tibetana* | Tibetan stone loach | Highland species |
+The 12 species and their NCBI accessions are the single source of truth in
+[`../data/accessions.tsv`](../data/accessions.tsv); see the repository `README.md`
+for the annotated species table.
+
+| Species | Role |
+|---------|------|
+| ***Aspiorhynchus laticeps*** | **Focal (Set 2)** |
+| ***Diptychus maculatus*** | **Focal (Set 3)** |
+| *Carassius auratus* | Comparison |
+| *Cyprinus carpio* | Comparison |
+| *Danio rerio* | Comparison |
+| *Gymnocypris eckloni* | Comparison |
+| *Oxygymnocypris stewartii* | Comparison |
+| *Schizopygopsis younghusbandi* | Comparison |
+| *Sinocyclocheilus grahami* | Comparison |
+| *Triplophysa pappenheimi* | Comparison |
+| *Triplophysa tibetana* | Comparison |
+| *Triplophysa yaopeizhii* | Comparison |
 
 ---
 

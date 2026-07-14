@@ -19,7 +19,6 @@
 #'   The YAML configuration supports template variables in the format ${section.key}
 #'   These are automatically resolved when the configuration is loaded.
 #'
-#' Author: Generated for ComparativeGenomics4AL_Publication
 
 # Check for yaml package
 if (!requireNamespace("yaml", quietly = TRUE)) {

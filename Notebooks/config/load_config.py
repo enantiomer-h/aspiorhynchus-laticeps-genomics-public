@@ -26,9 +26,7 @@ Template Variables:
         orthofinder:
           results_dir: "${base.outputs}/OrthoFinder/Results_${version}"
 
-    Resolves to: /home/jovyan/Outputs/OrthoFinder/Results_Jan09
-
-Author: Generated for ComparativeGenomics4AL_Publication
+    Resolves to: /home/jovyan/Outputs/OrthoFinder/Results_Mar03
 """
 
 import os

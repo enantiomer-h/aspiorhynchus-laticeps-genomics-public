@@ -24,23 +24,17 @@ This guide provides step-by-step instructions for running the genome preprocessi
 
 ## Target Species
 
-The pipeline processes 13 fish species for comparative genomics analysis:
+The pipeline processes the 12 comparative-set fish species. The authoritative
+species list and NCBI accessions are maintained in
+[`data/accessions.tsv`](../data/accessions.tsv); download the assemblies with
+`scripts/download_genomes.sh` (see the repository `README.md` and `DATA.md`).
 
-| Species | Common Name | Accession |
-|---------|-------------|-----------|
-| *Anabarilius grahami* | Kunming barb | GCA_003731715.1 |
-| *Aspiorhynchus laticeps* | Big-head schizothoracin | GCA_023376895.1 |
-| *Carassius auratus* | Goldfish | GCA_003368295.1 |
-| *Cyprinus carpio* | Common carp | GCF_018340385.1 |
-| *Danio rerio* | Zebrafish | GCF_000002035.6 |
-| *Gymnocypris eckloni* | Naked carp | GCA_027564155.1 |
-| *Labeo rohita* | Rohu | GCA_022985175.1 |
-| *Onychostoma macrolepis* | Largescale shoveljaw fish | GCA_012432095.1 |
-| *Oxygymnocypris stewartii* | Tibetan naked carp | GCA_003573665.1 |
-| *Schizothorax macropogon* | | GCA_041051915.1 |
-| *Sinocyclocheilus grahami* | Golden-line fish | GCA_001515645.1 |
-| *Triplophysa bombifrons* | | GCA_029783895.1 |
-| *Triplophysa dalaica* | | GCA_015846415.1 |
+> **Note:** The example commands throughout this guide were developed on an
+> earlier candidate species set and may name species (e.g. *Anabarilius grahami*,
+> *Labeo rohita*, *Schizothorax macropogon*) that are **not** part of the final 12.
+> Treat the species names in the example commands below as placeholders — the
+> authoritative set is `data/accessions.tsv`, obtained via
+> `scripts/download_genomes.sh`.
 
 ## Pipeline Steps
 
@@ -225,10 +219,10 @@ Before running the pipeline, you need to prepare the input data.
 The pipeline expects the following directory structure:
 
 ```
-ComparativeGenomics4AL_Publication/
+<repository-root>/
 ├── DB/
 │   ├── GENOME_Comparison/
-│   │   ├── Anabarilius_grahami/
+│   │   ├── Aspiorhynchus_laticeps/
 │   │   │   └── ncbi_dataset/
 │   │   │       └── data/
 │   │   │           └── GCA_003731715.1/
@@ -447,7 +441,7 @@ The `preprocess_all.sh` script contains commands organized by species. Each spec
 Run the entire script (will take days to weeks):
 
 ```bash
-cd /path/to/ComparativeGenomics4AL_Publication
+cd /path/to/repository-root
 bash ./scripts/preprocess_all.sh
 ```
 

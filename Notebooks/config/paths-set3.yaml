@@ -174,8 +174,8 @@ species:
 # =============================================================================
 mcscanx:
   comparisons:
-    - focal: "Diptychus_maculatus"
-      comparison: "Triplophysa_pappenheimi"
+    # Paper §2.7: the interspecific synteny comparison is between the two focal
+    # species only (A. laticeps vs D. maculatus; Fig. 6A).
     - focal: "Diptychus_maculatus"
       comparison: "Aspiorhynchus_laticeps"
   # Complete species list (12 species - Mar03 OrthoFinder run, set3)

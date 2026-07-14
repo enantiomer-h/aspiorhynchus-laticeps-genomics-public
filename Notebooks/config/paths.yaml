@@ -1,31 +1,28 @@
-# Path Configuration for Comparative Genomics Analysis
+# Path Configuration — DEFAULT (mirrors paths-set2.yaml, A. laticeps focal)
 # =============================================================================
-# This file centralizes all path configurations for notebooks.
-# Template syntax: ${section.key} references other paths in this file.
+# Separate config for the set2 species group (12 species, Mar03 OrthoFinder run).
+# All analysis outputs go to Outputs_set2/ to avoid conflicts with set1.
 #
-# To update OrthoFinder results directory, change only the 'version' value below.
-# All derived paths will automatically use the new directory.
+# Template syntax: ${section.key} references other paths in this file.
 # =============================================================================
 
-# Change this version string to update all OrthoFinder paths at once
-# Example: "Jan06", "Jan08", "Feb03", "Apr25"
-version: "Jan09"
+# OrthoFinder results version for set2
+version: "Mar03"
 
 # =============================================================================
 # Base Paths
 # =============================================================================
-# These are the root directories for the project.
-# project_root is the mount path inside the Docker container.
 base:
   project_root: "/home/jovyan"
   outputs: "${base.project_root}/Outputs"
+  outputs_set2: "${base.project_root}/Outputs_set2"
   notebooks: "${base.project_root}/Notebooks"
   database: "${base.project_root}/DB"
 
 # =============================================================================
 # OrthoFinder Paths
 # =============================================================================
-# All paths are derived from results_dir, which uses the version variable.
+# Results_Mar03 lives under the original Outputs/OrthoFinder/ directory.
 orthofinder:
   results_dir: "${base.outputs}/OrthoFinder/Results_${version}"
   # Orthogroups
@@ -56,7 +53,7 @@ orthofinder:
 # CAFE Analysis Paths
 # =============================================================================
 cafe:
-  base_dir: "${base.outputs}/CAFE"
+  base_dir: "${base.outputs_set2}/CAFE"
   # Input files
   input_tree: "${cafe.base_dir}/input_tree.tre"
   ultrametric_tree: "${cafe.base_dir}/species_tree_ultrametric.tre"
@@ -86,7 +83,7 @@ cafe:
 database:
   # Genome comparison data
   genome_comparison: "${base.database}/GENOME_Comparison"
-  faa_dir: "${database.genome_comparison}/FAA"
+  faa_dir: "${database.genome_comparison}/FAA-set2"
   # Annotation databases
   eggnog: "${base.database}/Eggnog"
   kegg_json: "${base.database}/ko00001.json"
@@ -100,26 +97,26 @@ database:
 # CDS Paths from BRAKER3 Outputs
 # =============================================================================
 cds:
-  base_dir: "${base.outputs}/Preprocessing/BRAKER_UNMASKED"
-  # Per-species CDS files (braker.codingseq format)
-  Anabarilius_grahami: "${cds.base_dir}/Anabarilius_grahami/braker.codingseq"
-  Aspiorhynchus_laticeps: "${cds.base_dir}/Aspiorhynchus_laticeps/braker.codingseq"
-  Carassius_auratus: "${cds.base_dir}/Carassius_auratus/braker.codingseq"
-  Cyprinus_carpio: "${cds.base_dir}/Cyprinus_carpio/braker.codingseq"
-  Danio_rerio: "${cds.base_dir}/Danio_rerio/braker.codingseq"
-  Labeo_rohita: "${cds.base_dir}/Labeo_rohita/braker.codingseq"
-  Onychostoma_macrolepis: "${cds.base_dir}/Onychostoma_macrolepis/braker.codingseq"
-  Schizothorax_macropogon: "${cds.base_dir}/Schizothorax_macropogon/braker.codingseq"
-  Sinocyclocheilus_grahami: "${cds.base_dir}/Sinocyclocheilus_grahami/braker.codingseq"
-  Triplophysa_bombifrons: "${cds.base_dir}/Triplophysa_bombifrons/braker.codingseq"
-  Triplophysa_dalaica: "${cds.base_dir}/Triplophysa_dalaica/braker.codingseq"
-  Triplophysa_tibetana: "${cds.base_dir}/Triplophysa_tibetana/braker.codingseq"
+  unmasked_dir: "${base.outputs}/Preprocessing/BRAKER_UNMASKED"
+  masked_dir: "${base.outputs}/Preprocessing/BRAKER_MASKED"
+  Aspiorhynchus_laticeps: "${cds.masked_dir}/Aspiorhynchus_laticeps/braker.codingseq"
+  Carassius_auratus: "${cds.masked_dir}/Carassius_auratus/braker.codingseq"
+  Cyprinus_carpio: "${cds.masked_dir}/Cyprinus_carpio/braker.codingseq"
+  Danio_rerio: "${cds.masked_dir}/Danio_rerio/braker.codingseq"
+  Diptychus_maculatus: "${cds.masked_dir}/Diptychus_maculatus/braker.codingseq"
+  Gymnocypris_eckloni: "${cds.masked_dir}/Gymnocypris_eckloni/braker.codingseq"
+  Oxygymnocypris_stewartii: "${cds.masked_dir}/Oxygymnocypris_stewartii/braker.codingseq"
+  Schizopygopsis_younghusbandi: "${cds.masked_dir}/Schizopygopsis_younghusbandi/braker.codingseq"
+  Sinocyclocheilus_grahami: "${cds.masked_dir}/Sinocyclocheilus_grahami/braker.codingseq"
+  Triplophysa_pappenheimi: "${cds.masked_dir}/Triplophysa_pappenheimi/braker.codingseq"
+  Triplophysa_tibetana: "${cds.masked_dir}/Triplophysa_tibetana/braker.codingseq"
+  Triplophysa_yaopeizhii: "${cds.masked_dir}/Triplophysa_yaopeizhii/braker.codingseq"
 
 # =============================================================================
 # Eggnog Annotation Outputs
 # =============================================================================
 eggnog:
-  output_dir: "${base.outputs}/Eggnog"
+  output_dir: "${base.outputs_set2}/Eggnog"
   annotations: "${eggnog.output_dir}/eggnog.anno"
   gene2go: "${eggnog.output_dir}/gene2go.txt"
   gene2pathway: "${eggnog.output_dir}/gene2pathway_name.txt"
@@ -129,25 +126,26 @@ eggnog:
 # =============================================================================
 # Output Directories
 # =============================================================================
+# All analysis outputs under Outputs_set2/ to separate from set1.
 outputs:
   # KaKs analysis
   kaks:
-    base_dir: "${base.outputs}/KaKs"
+    base_dir: "${base.outputs_set2}/KaKs"
     codon_alignments: "${outputs.kaks.base_dir}/codon_alignments"
     yn00_results: "${outputs.kaks.base_dir}/yn00_results"
     codeml_results: "${outputs.kaks.base_dir}/codeml_results"
     integration: "${outputs.kaks.base_dir}/integration"
     figures: "${outputs.kaks.base_dir}/figures"
   # Enrichment analysis
-  go_enrichment: "${base.outputs}/GO_Enrichment"
-  ko_enrichment: "${base.outputs}/KO_Enrichment"
+  go_enrichment: "${base.outputs_set2}/GO_Enrichment"
+  ko_enrichment: "${base.outputs_set2}/KO_Enrichment"
   # BLAST results
-  blastp: "${base.outputs}/Blastp"
+  blastp: "${base.outputs_set2}/Blastp"
   # Synteny analysis
-  mcscanx_results: "${base.outputs}/MCScanX_Results"
+  mcscanx_results: "${base.outputs_set2}/MCScanX_Results"
   # Genome-wide selection screening (no CAFE filter)
   genomewide_selection:
-    base_dir: "${base.outputs}/GenomewideSelection"
+    base_dir: "${base.outputs_set2}/GenomewideSelection"
     codon_alignments: "${outputs.genomewide_selection.base_dir}/codon_alignments"
     yn00_results: "${outputs.genomewide_selection.base_dir}/yn00_results"
     yn00_checkpoints: "${outputs.genomewide_selection.base_dir}/yn00_results/checkpoints"
@@ -155,8 +153,8 @@ outputs:
     summary: "${outputs.genomewide_selection.base_dir}/summary"
     figures: "${outputs.genomewide_selection.base_dir}/figures"
   # Notebook outputs
-  figures: "${base.notebooks}/Figures"
-  tables: "${base.notebooks}/Tables"
+  figures: "${base.notebooks}/Figures_set2"
+  tables: "${base.notebooks}/Tables_set2"
 
 # =============================================================================
 # Species Configuration
@@ -175,21 +173,21 @@ species:
 # =============================================================================
 mcscanx:
   comparisons:
+    # Paper §2.7: the interspecific synteny comparison is between the two focal
+    # species only (A. laticeps vs D. maculatus; Fig. 6A).
     - focal: "Aspiorhynchus_laticeps"
-      comparison: "Schizothorax_macropogon"
-    - focal: "Aspiorhynchus_laticeps"
-      comparison: "Triplophysa_bombifrons"
-  # Complete species list (12 species - Jan09 OrthoFinder run)
+      comparison: "Diptychus_maculatus"
+  # Complete species list (12 species - Mar03 OrthoFinder run, set2)
   all:
-    - "Anabarilius_grahami"
     - "Aspiorhynchus_laticeps"
     - "Carassius_auratus"
     - "Cyprinus_carpio"
     - "Danio_rerio"
-    - "Labeo_rohita"
-    - "Onychostoma_macrolepis"
-    - "Schizothorax_macropogon"
+    - "Diptychus_maculatus"
+    - "Gymnocypris_eckloni"
+    - "Oxygymnocypris_stewartii"
+    - "Schizopygopsis_younghusbandi"
     - "Sinocyclocheilus_grahami"
-    - "Triplophysa_bombifrons"
-    - "Triplophysa_dalaica"
+    - "Triplophysa_pappenheimi"
     - "Triplophysa_tibetana"
+    - "Triplophysa_yaopeizhii"

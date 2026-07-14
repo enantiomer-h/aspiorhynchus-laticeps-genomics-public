@@ -173,10 +173,10 @@ species:
 # =============================================================================
 mcscanx:
   comparisons:
+    # Paper §2.7: the interspecific synteny comparison is between the two focal
+    # species only (A. laticeps vs D. maculatus; Fig. 6A).
     - focal: "Aspiorhynchus_laticeps"
-      comparison: "Schizothorax_macropogon"
-    - focal: "Aspiorhynchus_laticeps"
-      comparison: "Triplophysa_bombifrons"
+      comparison: "Diptychus_maculatus"
   # Complete species list (12 species - Mar03 OrthoFinder run, set2)
   all:
     - "Aspiorhynchus_laticeps"

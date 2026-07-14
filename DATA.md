@@ -39,9 +39,10 @@ bash scripts/download_genomes.sh
 > are marked `NEEDS_TABLE_S1` — their source assemblies are not recorded in the
 > analysis workspace and must be filled in from the manuscript's **Table S1**:
 > *Schizopygopsis younghusbandi*, *Triplophysa pappenheimi*, *Triplophysa yaopeizhii*.
-> Also confirm the *Diptychus maculatus* assembly version: the manuscript Data
-> Availability cites **GCA_041504395.2**, while the workspace download record shows
-> **GCA_041504395.1** (same assembly, different version).
+>
+> The *Diptychus maculatus* accession is **GCA_041504395.2**, as stated in the
+> manuscript's Data Accessibility section (a local build record showed the earlier
+> `.1` version of the same assembly; the published `.2` is used here).
 
 ## Starting point
 

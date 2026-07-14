@@ -4,9 +4,12 @@ Reflects Notebooks/config/paths-set2.yaml and paths-set3.yaml.
 Both sets share the same 12-species roster (Mar03 OrthoFinder run); they
 differ only in focal species and output directories.
 """
+import os
 from pathlib import Path
 
-PROJECT_ROOT = Path("/home/jovyan")
+# Container layout defaults to /home/jovyan; override with PROJECT_ROOT if the
+# repository is mounted elsewhere.
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/home/jovyan"))
 
 SPECIES = [
     "Aspiorhynchus_laticeps",
