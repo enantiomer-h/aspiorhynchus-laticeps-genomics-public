@@ -130,4 +130,8 @@ Biopython · pyCirclize · matplotlib · ggplot2. See `env/sum.list` for version
 
 If you use this code, please cite the associated paper (bibliographic details to
 be finalized upon publication). Genome assemblies: *A. laticeps* GCA_023376895.1;
-*D. maculatus* GCA_041504395 (see `data/accessions.tsv`).
+*D. maculatus* GCA_041504395.2 (see `data/accessions.tsv`).
+
+## License
+
+Released under the MIT License — see [`LICENSE`](LICENSE).
